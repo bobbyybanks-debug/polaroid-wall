@@ -8,7 +8,7 @@ export default async function Home() {
   if (!layout || !layout.prints.length) {
     return (
       <main style={{ display: 'grid', placeItems: 'center', minHeight: '100vh', color: 'var(--ink-muted)', fontSize: 13 }}>
-        The archive opens soon.
+        soon
       </main>
     );
   }
