@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import type { WallLayout, WallPrint } from '@/lib/placement/service';
-import { movePrint, setSize, bringTo, resetToSuggestion, resetAllDrafts, takeOffWall, publishWall, rollback } from '@/app/admin/actions';
+import { movePrint, setSize, bringTo, resetToSuggestion, resetAllDrafts, takeOffWall, publishWall, rollback, spreadWall, makeRoomOnWall } from '@/app/admin/actions';
 
 type Hist = { id: number; status: string; publishedAt: string | null; note: string | null };
 type Changes = { added: number; edited: number; removed: number; total: number };
@@ -185,7 +185,7 @@ export default function WallEditor({ layout, changes, history, focus }: { layout
       {!preview && drafts.length > 0 && (
         <div className="fl new" onPointerDown={(e) => e.stopPropagation()}>
           <div className="row" style={{ justifyContent: 'space-between' }}><b style={{ fontWeight: 500 }}>New prints</b><span className="num muted">{drafts.length}</span></div>
-          <p className="note">Slotted into gaps at suggested spots. Gold outlines aren&apos;t live until you publish.</p>
+          <p className="note">Placed with room around them; the wall grows outward as you add more. Gold outlines aren&apos;t live until you publish.</p>
           <div className="grid">
             {drafts.map((p) => (
               <button key={p.id} className={p.id === sel ? 'on' : ''} title={p.n}
@@ -255,6 +255,15 @@ export default function WallEditor({ layout, changes, history, focus }: { layout
           <button className="link" onClick={() => zoomBy(1.25)}>+</button>
           <button className="link" onClick={() => setCam(fit())}>Fit wall</button>
         </span>
+        {!preview && prints.length > 1 && (
+          <span className="pill" title="Moves every print away from (or towards) the centre. Sizes and angles stay. Nothing goes live until you publish.">
+            <span className="muted">Spacing</span>
+            <button className="link" disabled={pending} title="Nudges prints apart just enough that none overlap and each has clear space. The arrangement stays."
+              onClick={() => start(async () => { const n = await makeRoomOnWall(); flash(n ? `Made room: ${n} print${n === 1 ? '' : 's'} nudged apart.` : 'Every print already has room.'); router.refresh(); })}>Make room</button>
+            <button className="link" disabled={pending} onClick={() => save(() => spreadWall('in'))}>Pull in</button>
+            <button className="link" disabled={pending} onClick={() => save(() => spreadWall('out'))}>Spread out</button>
+          </span>
+        )}
       </div>
       <div className="pills" style={{ left: '50%', bottom: 12, transform: 'translateX(-50%)' }} onPointerDown={(e) => e.stopPropagation()}>
         <span className="pill"><span style={{ width: 12, height: 9, border: '1.5px dashed var(--draft)' }} /> New — not live yet</span>

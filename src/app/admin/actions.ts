@@ -7,7 +7,7 @@ import { requireAdmin, supabaseServer } from '@/lib/auth';
 import { adminEmails, env } from '@/lib/env';
 import { db, schema } from '@/lib/db';
 import {
-  publish, rollbackTo, updatePlacement, removeFromWall, restack, resuggest, suggestPlacement, draftVersion,
+  publish, rollbackTo, updatePlacement, removeFromWall, restack, resuggest, suggestPlacement, draftVersion, spread, makeRoom,
   type PlacementPatch,
 } from '@/lib/placement/service';
 import { enqueue } from '@/lib/jobs';
@@ -82,6 +82,18 @@ export async function putOnWall(printId: string) {
   }
   await suggestPlacement(printId);
   revalidatePath('/admin');
+}
+
+/** Wall editor: nudge prints apart so nothing overlaps. Returns how many moved. */
+export async function makeRoomOnWall() {
+  await requireAdmin();
+  return makeRoom();
+}
+
+/** Spacing control in the wall editor: push every print outward ('out') or pull them in. */
+export async function spreadWall(direction: 'out' | 'in') {
+  await requireAdmin();
+  await spread(direction === 'out' ? 1.12 : 1 / 1.12);
 }
 
 export async function publishWall(note?: string) {

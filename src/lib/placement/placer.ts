@@ -2,10 +2,14 @@
  * Suggests where a new print goes on the wall. Pure function: no database, no randomness
  * other than a generator seeded by the print id, so asking twice gives the same answer.
  *
- * Rules (from the plan):
+ * Rules:
  * - Prints already on the wall are fixed obstacles; they never move.
- * - Fill open gaps in the wall first, then extend at the edges with the same row rhythm.
- * - A new print may cover the edge of an existing one by up to ~12% of that print's area.
+ * - Every new print keeps clear space around it (SPACING), so the wall never gets crowded:
+ *   a hole is used only if the print fits with that margin, otherwise the wall grows outward.
+ * - Growth stays balanced: spots nearest the wall's centre win, measured on a landscape
+ *   ellipse (ASPECT), so the wall widens about 1.6× faster than it gets taller.
+ * - A new spot must sit next to the wall (not floating), and lines up with existing rows when it can.
+ * - Overlap is off unless the wall setting allows it (then up to ~12% of a print's area).
  * - Suggest Large when large prints are under 10% of the wall and no large one sits within ~340 px.
  * - Rotation: 85% within ±3°, 10% up to ±6°, 5% accents at 7–12°.
  */
@@ -21,9 +25,16 @@ export type Placed = {
 
 export type Suggestion = { x: number; y: number; rotation: number; large: boolean; layer: number };
 
+/** Clear space kept around every new print, in wall px (a standard print is ~232 px wide). */
+export const SPACING = 36;
+/** Width ÷ height the wall grows towards. */
+export const ASPECT = 1.6;
+
 export type PlacerOptions = {
-  /** Max share of an existing print a new one may cover. 0 turns overlap off. */
+  /** Max share of an existing print a new one may cover. 0 (default) turns overlap off. */
   maxOverlap?: number;
+  /** Clear space around a new print when overlap is off. */
+  spacing?: number;
   /** Allow suggesting Large at all (manual picks always win). */
   allowLarge?: boolean;
 };
@@ -119,7 +130,8 @@ function rows(prints: Placed[]) {
 export function suggest(
   id: string, box: { w: number; h: number }, wall: Placed[], opts: PlacerOptions = {}, forceLarge?: boolean,
 ): Suggestion {
-  const maxOverlap = opts.maxOverlap ?? 0.12;
+  const maxOverlap = opts.maxOverlap ?? 0;
+  const spacing = maxOverlap > 0 ? 0 : (opts.spacing ?? SPACING);
   const r = rng(id);
   const rotation = seededRotation(r);
   const largeCount = wall.filter((p) => p.large).length;
@@ -128,63 +140,87 @@ export function suggest(
 
   if (!wall.length) return { x: 0, y: 0, rotation, large: !!forceLarge, layer };
 
+  const boxes = wall.map((p) => ({ p, q: aabb(p.x, p.y, p.w, p.h, p.rotation) }));
+  const ext = boxes.reduce((b, { q }) => ({ x0: Math.min(b.x0, q.x0), y0: Math.min(b.y0, q.y0), x1: Math.max(b.x1, q.x1), y1: Math.max(b.y1, q.y1) }),
+    { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
+  const cx = (ext.x0 + ext.x1) / 2, cy = (ext.y0 + ext.y1) / 2;
+  const rws = rows(wall);
+  const REACH = 44; // a spot counts as "next to the wall" if a print is within spacing + REACH
+
   const attempt = (large: boolean): Suggestion | null => {
     const w = large ? box.w * 1.5 : box.w, h = large ? box.h * 1.5 : box.h;
-    const cov = new Coverage(wall, Math.max(w, h) * 1.5);
-    const cx = wall.reduce((s, p) => s + p.x, 0) / wall.length, cy = wall.reduce((s, p) => s + p.y, 0) / wall.length;
-    const rws = rows(wall);
-    const pitch = rws.length > 1 ? (rws[rws.length - 1].y - rws[0].y) / (rws.length - 1) : h + 10;
-    const minY = Math.min(...wall.map((p) => p.y)), maxY = Math.max(...wall.map((p) => p.y));
+    const q0 = aabb(0, 0, w, h, rotation), hw = (q0.x1 - q0.x0) / 2, hh = (q0.y1 - q0.y0) / 2;
+    const margin = spacing + REACH + 16;
+    const cov = new Coverage(wall, Math.max(hw, hh) * 2 + margin * 2);
+    const larges = boxes.filter(({ p }) => p.large);
+    const step = 16;
+    let best: { s: number; x: number; y: number } | null = null;
 
-    const st: { best: { s: number; x: number; y: number } | null } = { best: null };
-    const consider = (x: number, y: number, kind: 'gap' | 'edge') => {
-      const q = aabb(x, y, w, h, rotation);
-      const area = (q.x1 - q.x0) * (q.y1 - q.y0);
-      // Never cover more than maxOverlap of any print, nor let prints cover the new one by more than that.
-      let coveredNew = 0;
-      for (const p of wall) {
-        const pq = aabb(p.x, p.y, p.w, p.h, p.rotation);
-        const o = inter(q, pq);
-        if (!o) continue;
-        if (o / ((pq.x1 - pq.x0) * (pq.y1 - pq.y0)) > maxOverlap) return;
-        if (large && p.large && Math.hypot(p.x - x, p.y - y) < 340) return;
-        coveredNew += o;
-      }
-      if (coveredNew / area > maxOverlap * 1.5) return;
-      if (large) for (const p of wall) if (p.large && Math.hypot(p.x - x, p.y - y) < 340 + Math.max(w, h) / 2) return;
-      const empty = 1 - cov.covered(q);
-      // Snugness: neighbours close on several sides read as part of the wall, not floating.
-      const ring = { x0: q.x0 - 24, y0: q.y0 - 24, x1: q.x1 + 24, y1: q.y1 + 24 };
-      const touch = cov.covered(ring) - cov.covered(q) * (area / ((ring.x1 - ring.x0) * (ring.y1 - ring.y0)));
-      const dist = Math.hypot((x - cx) / 1.6, y - cy);
-      let s = touch * 900 - dist * 0.6 + r() * 6;
-      if (kind === 'gap') { if (empty < 0.82) return; s += 1200 + empty * 300; }
-      if (!st.best || s > st.best.s) st.best = { s, x, y };
-    };
-
-    // 1. Gaps inside the wall.
-    const q0 = { x0: Math.min(...wall.map((p) => p.x)), x1: Math.max(...wall.map((p) => p.x)) };
-    for (let y = minY; y <= maxY; y += 12) for (let x = q0.x0; x <= q0.x1; x += 12) consider(x, y, 'gap');
-    if (st.best) return { x: Math.round(st.best.x), y: Math.round(st.best.y), rotation, large, layer };
-
-    // 2. Edges: continue each row left/right with a −14..+30 px gap, or start a row above/below.
-    for (const row of rws) {
-      const wave = (r() - 0.5) * 18;
-      for (const gap of [-14, 0, 8, 16, 30]) {
-        consider(row.x1 + gap + w / 2, row.y + wave, 'edge');
-        consider(row.x0 - gap - w / 2, row.y + wave, 'edge');
+    for (let y = ext.y0 - hh - spacing - REACH; y <= ext.y1 + hh + spacing + REACH; y += step) {
+      for (let x = ext.x0 - hw - spacing - REACH; x <= ext.x1 + hw + spacing + REACH; x += step) {
+        const q = { x0: x - hw, y0: y - hh, x1: x + hw, y1: y + hh };
+        const area = (q.x1 - q.x0) * (q.y1 - q.y0);
+        if (spacing > 0) {
+          // Nothing may sit inside the clear margin around the new print.
+          if (cov.covered({ x0: q.x0 - spacing, y0: q.y0 - spacing, x1: q.x1 + spacing, y1: q.y1 + spacing }) > 0) continue;
+        } else {
+          if (cov.covered(q) > maxOverlap * 1.5) continue;
+          let coveredNew = 0, bad = false;
+          for (const { q: pq } of boxes) {
+            const o = inter(q, pq);
+            if (!o) continue;
+            if (o / ((pq.x1 - pq.x0) * (pq.y1 - pq.y0)) > maxOverlap) { bad = true; break; }
+            coveredNew += o;
+          }
+          if (bad || coveredNew / area > maxOverlap * 1.5) continue;
+        }
+        if (large && larges.some(({ p }) => Math.hypot(p.x - x, p.y - y) < 340 + Math.max(w, h) / 2)) continue;
+        // Must be next to the wall, not floating off on its own.
+        const pad = spacing + REACH;
+        const ring = { x0: q.x0 - pad, y0: q.y0 - pad, x1: q.x1 + pad, y1: q.y1 + pad };
+        const ringArea = (ring.x1 - ring.x0) * (ring.y1 - ring.y0);
+        const near = cov.covered(ring) * ringArea - cov.covered(q) * area;
+        if (near <= 0) continue;
+        // Balanced growth: closest to the wall's centre on a landscape ellipse; snug neighbours help.
+        let s = -Math.hypot((x - cx) / ASPECT, y - cy) + (near / (ringArea - area)) * 260 + r() * 8;
+        for (const row of rws) if (Math.abs(y - row.y) < 14) { s += 40; break; }
+        if (!best || s > best.s) best = { s, x, y };
       }
     }
-    for (const y of [minY - pitch, maxY + pitch]) {
-      for (let x = q0.x0; x <= q0.x1; x += 24) consider(x, y + (r() - 0.5) * 18, 'edge');
-    }
-    const b = st.best as { x: number; y: number } | null;
-    return b ? { x: Math.round(b.x), y: Math.round(b.y), rotation, large, layer } : null;
+    return best ? { x: Math.round(best.x), y: Math.round(best.y), rotation, large, layer } : null;
   };
 
   return (wantLarge && attempt(true)) || attempt(false) || {
-    // Fallback: below the wall.
-    x: Math.round(wall.reduce((s, p) => s + p.x, 0) / wall.length),
-    y: Math.round(Math.max(...wall.map((p) => p.y + p.h)) + box.h), rotation, large: false, layer,
+    // Fallback: just below the wall.
+    x: Math.round(cx), y: Math.round(ext.y1 + spacing + box.h / 2), rotation, large: false, layer,
   };
+}
+
+/**
+ * "Make room": nudge prints apart just enough that none overlap and each keeps `spacing` clear
+ * around it. Each overlapping pair is pushed apart along the axis where they overlap least, so
+ * the arrangement (who sits next to whom, rows, angles) stays as it was. Returns new centres.
+ */
+export function relax(prints: Placed[], spacing = SPACING, iterations = 300): Map<string, { x: number; y: number }> {
+  const ps = prints.map((p) => {
+    const q = aabb(0, 0, p.w, p.h, p.rotation);
+    return { id: p.id, x: p.x, y: p.y, hw: (q.x1 - q.x0) / 2 + spacing / 2, hh: (q.y1 - q.y0) / 2 + spacing / 2 };
+  });
+  for (let it = 0; it < iterations; it++) {
+    let moved = false;
+    for (let i = 0; i < ps.length; i++) {
+      for (let j = i + 1; j < ps.length; j++) {
+        const a = ps[i], b = ps[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const ox = a.hw + b.hw - Math.abs(dx), oy = a.hh + b.hh - Math.abs(dy);
+        if (ox <= 0.5 || oy <= 0.5) continue;
+        moved = true;
+        // Widening is preferred a little (the wall is landscape), and vertical pushes keep rows.
+        if (ox < oy * ASPECT) { const k = (ox / 2 + 0.5) * (dx >= 0 ? 1 : -1); a.x -= k; b.x += k; }
+        else { const k = (oy / 2 + 0.5) * (dy >= 0 ? 1 : -1); a.y -= k; b.y += k; }
+      }
+    }
+    if (!moved) break;
+  }
+  return new Map(ps.map((p) => [p.id, { x: Math.round(p.x), y: Math.round(p.y) }]));
 }

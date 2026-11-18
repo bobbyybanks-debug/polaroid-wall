@@ -9,7 +9,7 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { env } from '../env';
 import { FILM_LONG_MM, PX_PER_MM } from '../processing/detect';
-import { suggest, type Placed } from './placer';
+import { relax, suggest, type Placed } from './placer';
 import type { Print } from '../db/schema';
 
 export const LARGE = 1.5;
@@ -51,7 +51,8 @@ async function placedWithBoxes(versionId: number): Promise<Placed[]> {
 async function maxOverlap(): Promise<number> {
   const d = await db();
   const [row] = await d.select().from(schema.settings).where(eq(schema.settings.key, 'allowOverlap'));
-  return row && row.value === false ? 0 : 0.12;
+  // Overlap is opt-in: by default every print keeps clear space around it.
+  return row && row.value === true ? 0.12 : 0;
 }
 
 /** Add a ready print to the draft at its suggested spot (no-op if it's already there). */
@@ -141,18 +142,10 @@ export async function publish(note?: string) {
   const ready = draft.filter((r) => r.st === 'ready' || r.st === 'needs_attention').map((r) => r.pl);
   const [prev] = await d.select().from(schema.layoutVersions).where(eq(schema.layoutVersions.status, 'published')).limit(1);
   const [draftRow] = await d.select().from(schema.layoutVersions).where(eq(schema.layoutVersions.id, vid));
-  // The opening view frames the wall's core. It only grows when new prints land outside it,
-  // so publishing never shifts what visitors first see unless the wall itself got bigger.
-  const frame = { ...(prev?.frame ?? draftRow.frame) };
-  if (prev) {
-    const liveIds = new Set((await d.select({ id: schema.placements.printId }).from(schema.placements).where(eq(schema.placements.versionId, prev.id))).map((r) => r.id));
-    const boxes = (await placedWithBoxes(vid)).filter((b) => !liveIds.has(b.id) && ready.some((r) => r.printId === b.id));
-    for (const b of boxes) {
-      const x0 = Math.min(frame.x, b.x - b.w / 2), y0 = Math.min(frame.y, b.y - b.h / 2);
-      const x1 = Math.max(frame.x + frame.w, b.x + b.w / 2), y1 = Math.max(frame.y + frame.h, b.y + b.h / 2);
-      Object.assign(frame, { x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
-    }
-  }
+  // The opening view frames the whole published wall (plus a margin), so it grows with the wall
+  // and only changes when the wall's outline does.
+  const liveBoxes = (await placedWithBoxes(vid)).filter((b) => ready.some((r) => r.printId === b.id));
+  const frame = liveBoxes.length ? frameAround(liveBoxes) : { ...(prev?.frame ?? draftRow.frame) };
   return d.transaction(async (tx) => {
     if (prev) await tx.update(schema.layoutVersions).set({ status: 'archived' }).where(eq(schema.layoutVersions.id, prev.id));
     const [v] = await tx.insert(schema.layoutVersions).values({ status: 'published', frame, note: note ?? null, publishedAt: new Date() }).returning();
@@ -164,6 +157,54 @@ export async function publish(note?: string) {
     await tx.update(schema.layoutVersions).set({ frame }).where(eq(schema.layoutVersions.id, vid));
     return { versionId: v.id, count: ready.length };
   });
+}
+
+const FRAME_MARGIN = 120;
+function frameAround(boxes: Placed[]) {
+  const b = boxes.reduce((r, p) => ({
+    x0: Math.min(r.x0, p.x - p.w / 2), y0: Math.min(r.y0, p.y - p.h / 2), x1: Math.max(r.x1, p.x + p.w / 2), y1: Math.max(r.y1, p.y + p.h / 2),
+  }), { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
+  const x = Math.round(b.x0 - FRAME_MARGIN), y = Math.round(b.y0 - FRAME_MARGIN);
+  return { x, y, w: Math.round(b.x1 + FRAME_MARGIN) - x, h: Math.round(b.y1 + FRAME_MARGIN) - y };
+}
+
+/**
+ * Give the whole draft wall more (factor > 1) or less (< 1) room: every print moves away from or
+ * towards the wall's centre; sizes and rotations stay. Published prints move too, as edits that
+ * only go live on Publish.
+ */
+export async function spread(factor: number) {
+  const d = await db();
+  const vid = await draftVersion();
+  const rows = await d.select({ id: schema.placements.id, x: schema.placements.x, y: schema.placements.y })
+    .from(schema.placements).where(eq(schema.placements.versionId, vid));
+  if (rows.length < 2) return;
+  const cx = rows.reduce((s, r) => s + r.x, 0) / rows.length, cy = rows.reduce((s, r) => s + r.y, 0) / rows.length;
+  await d.transaction(async (tx) => {
+    for (const r of rows) {
+      await tx.update(schema.placements)
+        .set({ x: Math.round(cx + (r.x - cx) * factor), y: Math.round(cy + (r.y - cy) * factor), updatedAt: new Date() })
+        .where(eq(schema.placements.id, r.id));
+    }
+  });
+}
+
+/** Nudge every draft print apart so none overlap and each has clear space (see relax()). */
+export async function makeRoom() {
+  const d = await db();
+  const vid = await draftVersion();
+  const wall = await placedWithBoxes(vid);
+  if (wall.length < 2) return 0;
+  const pos = relax(wall);
+  const moved = wall.filter((p) => { const q = pos.get(p.id)!; return q.x !== Math.round(p.x) || q.y !== Math.round(p.y); });
+  await d.transaction(async (tx) => {
+    for (const p of moved) {
+      const q = pos.get(p.id)!;
+      await tx.update(schema.placements).set({ x: q.x, y: q.y, updatedAt: new Date() })
+        .where(and(eq(schema.placements.versionId, vid), eq(schema.placements.printId, p.id)));
+    }
+  });
+  return moved.length;
 }
 
 /** Make an older version live again (as a new version, so nothing is lost). */
