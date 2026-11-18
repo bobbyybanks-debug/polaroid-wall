@@ -18,7 +18,7 @@ const plex = localFont({
 });
 
 export const metadata: Metadata = {
-  title: 'Bobby Banks — Archive',
+  title: 'Bobby Banks — Polaroids',
   description: 'An archive of Polaroids by Bobby Banks.',
   metadataBase: new URL(process.env.SITE_URL ?? 'http://localhost:3000'),
 };

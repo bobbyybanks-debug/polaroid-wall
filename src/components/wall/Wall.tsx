@@ -24,27 +24,14 @@ export default function Wall({ layout, openNumber }: { layout: WallLayout; openN
 
   return (
     <div className="wall-root" ref={root}>
-      <main id="stage" aria-label="Archive wall">
+      <main id="stage" aria-label="Polaroid wall">
         <div id="world" />
       </main>
       <div id="room" aria-hidden="true" />
       <div className="scrim scrim-top" aria-hidden="true" />
       <div className="scrim scrim-bottom" aria-hidden="true" />
 
-      <header className="pill title"><span className="name">Bobby Banks</span><span className="muted">Archive</span></header>
-
-      <div className="pill hint mono" id="hint">
-        <span className="for-pointer">Drag to explore&nbsp;&nbsp;·&nbsp;&nbsp;Scroll to zoom</span>
-        <span className="for-touch">Drag&nbsp;&nbsp;·&nbsp;&nbsp;Pinch to zoom</span>
-      </div>
-
-      <nav className="pill zoom" aria-label="Zoom">
-        <button className="zbtn" id="zout" type="button" aria-label="Zoom out">−</button>
-        <span className="mono zval" id="zval">70%</span>
-        <button className="zbtn" id="zin" type="button" aria-label="Zoom in">+</button>
-        <span className="divider" aria-hidden="true" />
-        <button className="reset" id="reset" type="button">Reset</button>
-      </nav>
+      <header className="pill title"><span className="name">Bobby Banks</span><span className="muted">Polaroids</span></header>
 
       <div id="viewer" role="dialog" aria-modal="true" aria-label="Print" tabIndex={-1} hidden>
         <div className="veil" id="veil" />
@@ -56,7 +43,7 @@ export default function Wall({ layout, openNumber }: { layout: WallLayout; openN
         <button className="ibtn side prev" id="vprev" type="button" aria-label="Previous print"><Chevron dir="prev" /></button>
         <button className="ibtn side next" id="vnext" type="button" aria-label="Next print"><Chevron dir="next" /></button>
         <div className="pill hint mono vhint">
-          <span className="for-pointer">← → to browse&nbsp;&nbsp;·&nbsp;&nbsp;Scroll to zoom&nbsp;&nbsp;·&nbsp;&nbsp;Esc to close</span>
+          <span className="for-pointer">← → to browse&nbsp;&nbsp;·&nbsp;&nbsp;Pinch to zoom&nbsp;&nbsp;·&nbsp;&nbsp;Esc to close</span>
           <span className="for-touch">Swipe to browse&nbsp;&nbsp;·&nbsp;&nbsp;Pinch to zoom</span>
         </div>
       </div>

@@ -14,8 +14,8 @@ export async function generateMetadata({ params }: PageProps<'/p/[n]'>): Promise
   const jpegSize = p.sizes[Math.min(p.sizes.length - 1, 2)];
   const image = `${p.src}/${jpegSize}.jpg`;
   return {
-    title: `${p.n} — Bobby Banks Archive`,
-    openGraph: { title: `${p.n} — Bobby Banks Archive`, images: [{ url: image }] },
+    title: `${p.n} — Bobby Banks Polaroids`,
+    openGraph: { title: `${p.n} — Bobby Banks Polaroids`, images: [{ url: image }] },
     twitter: { card: 'summary_large_image', images: [image] },
   };
 }

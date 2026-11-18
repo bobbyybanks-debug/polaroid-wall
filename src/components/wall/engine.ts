@@ -20,7 +20,6 @@ export type WallOptions = {
 export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) {
   const $ = <T extends El = El>(sel: string) => root.querySelector(sel) as T;
   const stage = $('#stage'), world = $('#world'), body = root;
-  const zval = $('#zval'), zin = $<HTMLButtonElement>('#zin'), zout = $<HTMLButtonElement>('#zout'), resetBtn = $('#reset'), hint = $('#hint');
   const viewer = $('#viewer'), veil = $('#veil'), vstage = $('#vstage'), vimg = $<HTMLImageElement>('#vimg');
   const vclose = $('#vclose'), vprev = $('#vprev'), vnext = $('#vnext');
   const printPath = opts.printPath ?? ((n: string) => `/p/${encodeURIComponent(n)}`);
@@ -116,19 +115,27 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
   let camAnim: { cancel(): void } | null = null, inertiaRaf = 0;
   let movingTimer: ReturnType<typeof setTimeout> | undefined, tierTimer: ReturnType<typeof setTimeout> | undefined;
 
+  /** Zoom at which the whole wall fits the window with a margin. */
+  function fitZ() {
+    const mx = isNarrow() ? 16 : 132, my = isNarrow() ? 16 : 80;
+    return Math.min((innerWidth - 2 * mx) / (bounds.maxX - bounds.minX), (innerHeight - 2 * my) / (bounds.maxY - bounds.minY));
+  }
   function initialZ() {
-    const base = isNarrow() ? 0 : .7;
+    // Desktop opens on the whole wall. Phones open on the wall's height so prints stay readable.
+    if (!isNarrow()) return clamp(fitZ(), FLOOR_Z, 1.2);
     const fill = Math.max(Math.ceil(innerHeight / frame.h * 100) / 100, Math.ceil(innerWidth / frame.w * 100) / 100);
-    return Math.min(1.2, Math.max(base, fill));
+    return Math.min(1.2, fill);
   }
   function initialView() {
     const iz = initialZ();
+    if (!isNarrow()) {
+      const cx = (bounds.minX + bounds.maxX) / 2, cy = (bounds.minY + bounds.maxY) / 2;
+      return { z: iz, tx: innerWidth / 2 - cx * iz, ty: innerHeight / 2 - cy * iz };
+    }
     return { z: iz, tx: (innerWidth - frame.w * iz) / 2 - frame.x * iz, ty: (innerHeight - frame.h * iz) / 2 - frame.y * iz };
   }
   function computeLimits() {
-    const mx = isNarrow() ? 16 : 132, my = isNarrow() ? 16 : 80;
-    const fit = Math.min((innerWidth - 2 * mx) / (bounds.maxX - bounds.minX), (innerHeight - 2 * my) / (bounds.maxY - bounds.minY));
-    minZ = Math.max(FLOOR_Z, Math.min(fit, initialZ()));
+    minZ = Math.max(FLOOR_Z, Math.min(fitZ(), initialZ()));
   }
   function clampPan() {
     const vw = innerWidth, vh = innerHeight;
@@ -150,9 +157,6 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
   function apply() {
     world.style.transform = `translate(${tx}px, ${ty}px) scale(${z})`;
     cull();
-    zval.textContent = Math.round(z * 100) + '%';
-    zout.disabled = z <= minZ + 1e-3;
-    zin.disabled = z >= MAX_Z - 1e-3;
   }
   function markMoving() {
     world.classList.add('moving');
@@ -233,14 +237,9 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
   const pointers = new Map<number, { x: number; y: number }>();
   type Drag = { x0: number; y0: number; lx: number; ly: number; moved: boolean; print: HTMLElement | null; samples: number[][] };
   let drag: Drag | null = null, pinch: { cx: number; cy: number; d: number; z0: number; wx: number; wy: number } | null = null;
-  let lastTap: { t: number; x: number; y: number } | null = null, hintHidden = false;
+  let lastTap: { t: number; x: number; y: number } | null = null;
 
   const clearPressed = () => { for (const el of world.querySelectorAll('.pressed')) el.classList.remove('pressed'); };
-  function firstDrag() {
-    if (hintHidden || !coarse.matches) return;
-    hintHidden = true;
-    setTimeout(() => hint.classList.add('gone'), 600);
-  }
   function pinchState() {
     const [a, b] = [...pointers.values()];
     return { cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2, d: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)) };
@@ -259,7 +258,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
       const s = pinchState();
       pinch = { ...s, z0: z, wx: (s.cx - tx) / z, wy: (s.cy - ty) / z };
       if (drag) drag.moved = true;
-      clearPressed(); firstDrag();
+      clearPressed();
     }
   });
 
@@ -278,7 +277,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     if (!drag.moved && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) > (e.pointerType === 'mouse' ? 4 : 8)) {
       drag.moved = true; drag.lx = drag.x0; drag.ly = drag.y0;
       stage.classList.add('dragging');
-      clearPressed(); firstDrag();
+      clearPressed();
     }
     if (drag.moved) { tx += e.clientX - drag.lx; ty += e.clientY - drag.ly; clampPan(); apply(); markMoving(); }
     drag.lx = e.clientX; drag.ly = e.clientY;
@@ -347,15 +346,31 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     stopMotion();
     let dx = e.deltaX, dy = e.deltaY;
     if (e.deltaMode === 1) { dx *= 16; dy *= 16; } else if (e.deltaMode === 2) { dx *= innerWidth; dy *= innerHeight; }
-    if (!e.ctrlKey && Math.abs(dx) > Math.abs(dy)) { tx -= dx; ty -= dy; clampPan(); apply(); markMoving(); return; }
-    const k = e.ctrlKey ? .01 : .002;
-    zoomAt(z * Math.exp(-clamp(dy, -120, 120) * k), e.clientX, e.clientY);
+    // Trackpad pinch (and Ctrl + wheel) zooms; plain two-finger scrolling moves the wall any direction.
+    if (e.ctrlKey) {
+      if (gesture) return; // Safari reports the same pinch as gesture events
+      zoomAt(z * Math.exp(-clamp(dy, -120, 120) * .01), e.clientX, e.clientY);
+      return;
+    }
+    tx -= dx; ty -= dy; clampPan(); apply(); markMoving();
   }, { passive: false });
 
-  on(zin, 'click', () => animateZoomAt(z * 1.25, innerWidth / 2, innerHeight / 2));
-  on(zout, 'click', () => animateZoomAt(z / 1.25, innerWidth / 2, innerHeight / 2));
-  on(resetBtn, 'click', () => animateTo(initialView(), 420));
-  on(document, 'gesturestart', (e: Event) => e.preventDefault());
+  // Safari sends trackpad pinches as gesture events (scale relative to the start of the pinch).
+  type GestureLike = Event & { scale: number; clientX: number; clientY: number };
+  let gesture: { z0: number; s0: number } | null = null;
+  on(document, 'gesturestart', (e: GestureLike) => {
+    e.preventDefault();
+    gesture = { z0: z, s0: V.s };
+    stopMotion();
+  });
+  on(document, 'gesturechange', (e: GestureLike) => {
+    e.preventDefault();
+    if (!gesture) return;
+    const x = e.clientX || innerWidth / 2, y = e.clientY || innerHeight / 2;
+    if (V.open) { if (!V.anim) zoomViewerAt(gesture.s0 * e.scale, x, y); }
+    else zoomAt(gesture.z0 * e.scale, x, y);
+  });
+  on(document, 'gestureend', (e: GestureLike) => { e.preventDefault(); gesture = null; });
 
   /* ---------------- Viewer ---------------- */
   const V = {
@@ -407,10 +422,10 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
       if (p) {
         const url = printPath(p.n);
         if (!V.pushed) { history.pushState({ print: p.n }, '', url); V.pushed = true; } else history.replaceState({ print: p.n }, '', url);
-        document.title = `${p.n} — Bobby Banks Archive`;
+        document.title = `${p.n} — Bobby Banks Polaroids`;
       } else {
         history.replaceState(null, '', homePath);
-        document.title = 'Bobby Banks — Archive';
+        document.title = 'Bobby Banks — Polaroids';
       }
     } catch { /* ignore */ }
   }
@@ -452,7 +467,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
       if (V.pushed) { V.pushed = false; try { history.back(); } catch { setUrl(null); } }
       else setUrl(null);
     } else V.pushed = false;
-    document.title = 'Bobby Banks — Archive';
+    document.title = 'Bobby Banks — Polaroids';
   }
 
   function switchTo(q: P | undefined, dir: number) {
@@ -510,9 +525,14 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
   on(vstage, 'wheel', (e: WheelEvent) => {
     e.preventDefault();
     if (!V.open || V.anim) return;
-    let dy = e.deltaY;
-    if (e.deltaMode === 1) dy *= 16; else if (e.deltaMode === 2) dy *= innerHeight;
-    zoomViewerAt(V.s * Math.exp(-clamp(dy, -120, 120) * (e.ctrlKey ? .01 : .002)), e.clientX, e.clientY);
+    let dx = e.deltaX, dy = e.deltaY;
+    if (e.deltaMode === 1) { dx *= 16; dy *= 16; } else if (e.deltaMode === 2) { dx *= innerWidth; dy *= innerHeight; }
+    if (e.ctrlKey) {
+      if (gesture) return;
+      zoomViewerAt(V.s * Math.exp(-clamp(dy, -120, 120) * .01), e.clientX, e.clientY);
+      return;
+    }
+    if (V.s > 1.001) { const c = clampViewerPan(V.cx - dx, V.cy - dy, V.s); V.cx = c.cx; V.cy = c.cy; drawImg(); }
   }, { passive: false });
 
   const vp = new Map<number, { x: number; y: number }>();
