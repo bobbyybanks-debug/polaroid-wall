@@ -40,7 +40,9 @@ let cached: Env | null = null;
 
 export function env(): Env {
   if (!cached) {
-    const parsed = schema.safeParse(process.env);
+    // Trim pasted values: a stray space or newline from copy-paste breaks URLs and keys.
+    const trimmed = Object.fromEntries(Object.entries(process.env).map(([k, v]) => [k, typeof v === 'string' ? v.trim() : v]));
+    const parsed = schema.safeParse(trimmed);
     if (!parsed.success) {
       const missing = parsed.error.issues.map((i) => i.path.join('.')).join(', ');
       throw new Error(`Missing or invalid configuration: ${missing}. See README → Environment variables.`);
