@@ -61,7 +61,7 @@
 .drop.over { background: rgba(154, 122, 62, .08); border-color: var(--draft); }
 .drop .rules { display: flex; gap: 22px; flex-wrap: wrap; color: var(--ink-muted); }
 
-.banner { margin: 0 0 14px; padding: 10px 14px; border-radius: 10px; background: rgba(154, 122, 62, .1); display: flex; gap: 12px; align-items: center; }
+.banner { margin: 0 0 14px; padding: 10px 14px; border-radius: 10px; background: rgba(154, 122, 62, .1); display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
 
 /* Table */
 .table { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--card); border-radius: 12px; box-shadow: inset 0 0 0 .5px var(--line); overflow: hidden; }

@@ -20,6 +20,7 @@ export default function Library({ data }: { data: LibraryData }) {
   const [items, setItems] = useState<Item[]>([]);
   const [, startTransition] = useTransition();
   const [setupMsg, setSetupMsg] = useState<string | null>(null);
+  const [manualCors, setManualCors] = useState<{ bucket: string; json: string } | null>(null);
   const [up] = useState(() => new Uploader());
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => up.subscribe(setItems), [up]);
@@ -63,11 +64,19 @@ export default function Library({ data }: { data: LibraryData }) {
   const failedUploads = data.uploads.filter((u) => u.status === 'failed');
   const live = items.filter((i) => !['processing', 'skipped', 'cancelled'].includes(i.state));
 
-  async function setupStorage() {
-    setSetupMsg('Applying…');
-    const r = await fetch('/api/admin/setup-storage', { method: 'POST' });
-    setSetupMsg(r.ok ? 'Done. Uploads are ready.' : `Couldn't apply the rules (${r.status}). Check the storage keys in Vercel.`);
-    if (r.ok) router.refresh();
+  async function setupStorage(manual = false) {
+    setSetupMsg(manual ? 'Saving…' : 'Applying…');
+    const r = await fetch('/api/admin/setup-storage', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ manual }),
+    });
+    const j = (await r.json().catch(() => ({}))) as { manual?: boolean; message?: string; bucket?: string; cors?: unknown };
+    if (r.status === 409 && j.manual) {
+      setManualCors({ bucket: j.bucket ?? 'polaroid-originals', json: JSON.stringify(j.cors, null, 2) });
+      setSetupMsg(j.message ?? 'Add the CORS policy in Cloudflare.');
+      return;
+    }
+    setSetupMsg(r.ok ? 'Done. Uploads are ready.' : `Couldn't apply the rules (${r.status}). Open /api/admin/check to see what's wrong.`);
+    if (r.ok) { setManualCors(null); router.refresh(); }
   }
 
   return (
@@ -84,8 +93,18 @@ export default function Library({ data }: { data: LibraryData }) {
       {!data.storageReady && (
         <div className="banner">
           <span>One-time setup: let this site upload to your storage bucket.</span>
-          <button className="btn" onClick={setupStorage}>Apply upload rules</button>
+          <button className="btn" onClick={() => setupStorage()}>Apply upload rules</button>
           {setupMsg && <span className="muted">{setupMsg}</span>}
+          {manualCors && (
+            <div style={{ flexBasis: '100%', display: 'grid', gap: 8, marginTop: 8 }}>
+              <pre style={{ margin: 0, padding: 12, background: 'var(--paper, #fff)', border: '1px solid var(--line, #ddd)', borderRadius: 6, fontSize: 12, overflowX: 'auto' }}>{manualCors.json}</pre>
+              <div className="row" style={{ gap: 8 }}>
+                <button className="btn" onClick={() => navigator.clipboard?.writeText(manualCors.json)}>Copy policy</button>
+                <a className="btn" href="https://dash.cloudflare.com/?to=/:account/r2/overview" target="_blank" rel="noreferrer">Open Cloudflare R2</a>
+                <button className="btn dark" onClick={() => setupStorage(true)}>I’ve added it</button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
