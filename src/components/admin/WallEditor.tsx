@@ -185,7 +185,7 @@ export default function WallEditor({ layout, changes, history, focus }: { layout
       {!preview && drafts.length > 0 && (
         <div className="fl new" onPointerDown={(e) => e.stopPropagation()}>
           <div className="row" style={{ justifyContent: 'space-between' }}><b style={{ fontWeight: 500 }}>New prints</b><span className="num muted">{drafts.length}</span></div>
-          <p className="note">Placed with room around them; the wall grows outward as you add more. Gold outlines aren&apos;t live until you publish.</p>
+          <p className="note">Placed tight against the wall&apos;s edge; the wall grows outward as you add more. Gold outlines aren&apos;t live until you publish.</p>
           <div className="grid">
             {drafts.map((p) => (
               <button key={p.id} className={p.id === sel ? 'on' : ''} title={p.n}
@@ -258,8 +258,8 @@ export default function WallEditor({ layout, changes, history, focus }: { layout
         {!preview && prints.length > 1 && (
           <span className="pill" title="Moves every print away from (or towards) the centre. Sizes and angles stay. Nothing goes live until you publish.">
             <span className="muted">Spacing</span>
-            <button className="link" disabled={pending} title="Nudges prints apart just enough that none overlap and each has clear space. The arrangement stays."
-              onClick={() => start(async () => { const n = await makeRoomOnWall(); flash(n ? `Made room: ${n} print${n === 1 ? '' : 's'} nudged apart.` : 'Every print already has room.'); router.refresh(); })}>Make room</button>
+            <button className="link" disabled={pending} title="Nudges apart prints that sit on top of each other. Edges can still tuck slightly under each other, and the arrangement stays."
+              onClick={() => start(async () => { const n = await makeRoomOnWall(); flash(n ? `${n} print${n === 1 ? '' : 's'} nudged apart.` : 'Nothing is stacked on top of anything.'); router.refresh(); })}>Fix overlaps</button>
             <button className="link" disabled={pending} onClick={() => save(() => spreadWall('in'))}>Pull in</button>
             <button className="link" disabled={pending} onClick={() => save(() => spreadWall('out'))}>Spread out</button>
           </span>

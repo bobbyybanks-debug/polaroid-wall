@@ -4,12 +4,12 @@
  *
  * Rules:
  * - Prints already on the wall are fixed obstacles; they never move.
- * - Every new print keeps clear space around it (SPACING), so the wall never gets crowded:
- *   a hole is used only if the print fits with that margin, otherwise the wall grows outward.
+ * - Dense like the approved Figma wall: a new print sits MIN_GAP..MAX_GAP from its neighbours
+ *   (−14 to +24 px, so edges may tuck slightly under/over each other, never deeper).
+ * - A hole is used only if the print fits at that rhythm; otherwise the wall grows outward.
  * - Growth stays balanced: spots nearest the wall's centre win, measured on a landscape
  *   ellipse (ASPECT), so the wall widens about 1.6× faster than it gets taller.
  * - A new spot must sit next to the wall (not floating), and lines up with existing rows when it can.
- * - Overlap is off unless the wall setting allows it (then up to ~12% of a print's area).
  * - Suggest Large when large prints are under 10% of the wall and no large one sits within ~340 px.
  * - Rotation: 85% within ±3°, 10% up to ±6°, 5% accents at 7–12°.
  */
@@ -25,16 +25,18 @@ export type Placed = {
 
 export type Suggestion = { x: number; y: number; rotation: number; large: boolean; layer: number };
 
-/** Clear space kept around every new print, in wall px (a standard print is ~232 px wide). */
-export const SPACING = 36;
+/** Closest a new print may come to a neighbour, in wall px (negative = edges may overlap that much). */
+export const MIN_GAP = -14;
+/** Farthest it may sit from its nearest neighbour (keeps the wall dense, nothing floats). */
+export const MAX_GAP = 24;
 /** Width ÷ height the wall grows towards. */
 export const ASPECT = 1.6;
 
 export type PlacerOptions = {
-  /** Max share of an existing print a new one may cover. 0 (default) turns overlap off. */
-  maxOverlap?: number;
-  /** Clear space around a new print when overlap is off. */
-  spacing?: number;
+  /** Override MIN_GAP (e.g. 8 when edge overlaps are turned off). */
+  minGap?: number;
+  /** Override MAX_GAP. */
+  maxGap?: number;
   /** Allow suggesting Large at all (manual picks always win). */
   allowLarge?: boolean;
 };
@@ -67,7 +69,6 @@ function aabb(x: number, y: number, w: number, h: number, rotDeg: number): Rect 
   const hw = (w * c + h * s) / 2, hh = (w * s + h * c) / 2;
   return { x0: x - hw, y0: y - hh, x1: x + hw, y1: y + hh };
 }
-const inter = (a: Rect, b: Rect) => Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0)) * Math.max(0, Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0));
 
 /** Coverage raster (8 px cells) with a summed-area table for fast "how empty is this box". */
 class Coverage {
@@ -130,8 +131,8 @@ function rows(prints: Placed[]) {
 export function suggest(
   id: string, box: { w: number; h: number }, wall: Placed[], opts: PlacerOptions = {}, forceLarge?: boolean,
 ): Suggestion {
-  const maxOverlap = opts.maxOverlap ?? 0;
-  const spacing = maxOverlap > 0 ? 0 : (opts.spacing ?? SPACING);
+  const minGap = opts.minGap ?? MIN_GAP;
+  const maxGap = Math.max(minGap + 8, opts.maxGap ?? MAX_GAP);
   const r = rng(id);
   const rotation = seededRotation(r);
   const largeCount = wall.filter((p) => p.large).length;
@@ -145,39 +146,26 @@ export function suggest(
     { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
   const cx = (ext.x0 + ext.x1) / 2, cy = (ext.y0 + ext.y1) / 2;
   const rws = rows(wall);
-  const REACH = 44; // a spot counts as "next to the wall" if a print is within spacing + REACH
 
   const attempt = (large: boolean): Suggestion | null => {
     const w = large ? box.w * 1.5 : box.w, h = large ? box.h * 1.5 : box.h;
     const q0 = aabb(0, 0, w, h, rotation), hw = (q0.x1 - q0.x0) / 2, hh = (q0.y1 - q0.y0) / 2;
-    const margin = spacing + REACH + 16;
+    const margin = Math.abs(minGap) + maxGap + 16;
     const cov = new Coverage(wall, Math.max(hw, hh) * 2 + margin * 2);
     const larges = boxes.filter(({ p }) => p.large);
     const step = 16;
     let best: { s: number; x: number; y: number } | null = null;
 
-    for (let y = ext.y0 - hh - spacing - REACH; y <= ext.y1 + hh + spacing + REACH; y += step) {
-      for (let x = ext.x0 - hw - spacing - REACH; x <= ext.x1 + hw + spacing + REACH; x += step) {
+    for (let y = ext.y0 - hh - maxGap; y <= ext.y1 + hh + maxGap; y += step) {
+      for (let x = ext.x0 - hw - maxGap; x <= ext.x1 + hw + maxGap; x += step) {
         const q = { x0: x - hw, y0: y - hh, x1: x + hw, y1: y + hh };
         const area = (q.x1 - q.x0) * (q.y1 - q.y0);
-        if (spacing > 0) {
-          // Nothing may sit inside the clear margin around the new print.
-          if (cov.covered({ x0: q.x0 - spacing, y0: q.y0 - spacing, x1: q.x1 + spacing, y1: q.y1 + spacing }) > 0) continue;
-        } else {
-          if (cov.covered(q) > maxOverlap * 1.5) continue;
-          let coveredNew = 0, bad = false;
-          for (const { q: pq } of boxes) {
-            const o = inter(q, pq);
-            if (!o) continue;
-            if (o / ((pq.x1 - pq.x0) * (pq.y1 - pq.y0)) > maxOverlap) { bad = true; break; }
-            coveredNew += o;
-          }
-          if (bad || coveredNew / area > maxOverlap * 1.5) continue;
-        }
+        // Nothing may come closer than minGap (with a negative minGap, only the outer edge may overlap).
+        const core = { x0: q.x0 - minGap, y0: q.y0 - minGap, x1: q.x1 + minGap, y1: q.y1 + minGap };
+        if (core.x1 > core.x0 && core.y1 > core.y0 && cov.covered(core) > 0) continue;
         if (large && larges.some(({ p }) => Math.hypot(p.x - x, p.y - y) < 340 + Math.max(w, h) / 2)) continue;
         // Must be next to the wall, not floating off on its own.
-        const pad = spacing + REACH;
-        const ring = { x0: q.x0 - pad, y0: q.y0 - pad, x1: q.x1 + pad, y1: q.y1 + pad };
+        const ring = { x0: q.x0 - maxGap, y0: q.y0 - maxGap, x1: q.x1 + maxGap, y1: q.y1 + maxGap };
         const ringArea = (ring.x1 - ring.x0) * (ring.y1 - ring.y0);
         const near = cov.covered(ring) * ringArea - cov.covered(q) * area;
         if (near <= 0) continue;
@@ -192,19 +180,19 @@ export function suggest(
 
   return (wantLarge && attempt(true)) || attempt(false) || {
     // Fallback: just below the wall.
-    x: Math.round(cx), y: Math.round(ext.y1 + spacing + box.h / 2), rotation, large: false, layer,
+    x: Math.round(cx), y: Math.round(ext.y1 + box.h / 2), rotation, large: false, layer,
   };
 }
 
 /**
- * "Make room": nudge prints apart just enough that none overlap and each keeps `spacing` clear
- * around it. Each overlapping pair is pushed apart along the axis where they overlap least, so
+ * "Fix overlaps": nudge apart prints that sit on top of each other, just enough that no two come
+ * closer than `minGap` (default: edges may still tuck 14 px under each other, like the rest of the wall). Each overlapping pair is pushed apart along the axis where they overlap least, so
  * the arrangement (who sits next to whom, rows, angles) stays as it was. Returns new centres.
  */
-export function relax(prints: Placed[], spacing = SPACING, iterations = 300): Map<string, { x: number; y: number }> {
+export function relax(prints: Placed[], minGap = MIN_GAP, iterations = 300): Map<string, { x: number; y: number }> {
   const ps = prints.map((p) => {
     const q = aabb(0, 0, p.w, p.h, p.rotation);
-    return { id: p.id, x: p.x, y: p.y, hw: (q.x1 - q.x0) / 2 + spacing / 2, hh: (q.y1 - q.y0) / 2 + spacing / 2 };
+    return { id: p.id, x: p.x, y: p.y, hw: (q.x1 - q.x0) / 2 + minGap / 2, hh: (q.y1 - q.y0) / 2 + minGap / 2 };
   });
   for (let it = 0; it < iterations; it++) {
     let moved = false;

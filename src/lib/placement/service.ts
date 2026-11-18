@@ -48,11 +48,11 @@ async function placedWithBoxes(versionId: number): Promise<Placed[]> {
   });
 }
 
-async function maxOverlap(): Promise<number> {
+/** Placement rhythm: dense with slight edge overlaps by default; the wall setting can turn overlaps off. */
+async function placerOptions(): Promise<{ minGap?: number }> {
   const d = await db();
   const [row] = await d.select().from(schema.settings).where(eq(schema.settings.key, 'allowOverlap'));
-  // Overlap is opt-in: by default every print keeps clear space around it.
-  return row && row.value === true ? 0.12 : 0;
+  return row && row.value === false ? { minGap: 8 } : {};
 }
 
 /** Add a ready print to the draft at its suggested spot (no-op if it's already there). */
@@ -65,7 +65,7 @@ export async function suggestPlacement(printId: string) {
   const [p] = await d.select().from(schema.prints).where(eq(schema.prints.id, printId));
   if (!p) return;
   const wall = await placedWithBoxes(vid);
-  const s = suggest(p.id, boxFor(p), wall, { maxOverlap: await maxOverlap() });
+  const s = suggest(p.id, boxFor(p), wall, await placerOptions());
   const size = s.large ? 'large' : 'standard';
   await d.insert(schema.placements).values({
     versionId: vid, printId, x: s.x, y: s.y, rotation: s.rotation, size, layer: s.layer,
@@ -80,7 +80,7 @@ export async function resuggest(printId: string, forceSize?: 'standard' | 'large
   await d.delete(schema.placements).where(and(eq(schema.placements.versionId, vid), eq(schema.placements.printId, printId)));
   const [p] = await d.select().from(schema.prints).where(eq(schema.prints.id, printId));
   const wall = await placedWithBoxes(vid);
-  const s = suggest(p.id, boxFor(p), wall, { maxOverlap: await maxOverlap() }, forceSize ? forceSize === 'large' : undefined);
+  const s = suggest(p.id, boxFor(p), wall, await placerOptions(), forceSize ? forceSize === 'large' : undefined);
   const size = s.large ? 'large' : 'standard';
   await d.insert(schema.placements).values({
     versionId: vid, printId, x: s.x, y: s.y, rotation: s.rotation, size, layer: s.layer,
@@ -189,13 +189,13 @@ export async function spread(factor: number) {
   });
 }
 
-/** Nudge every draft print apart so none overlap and each has clear space (see relax()). */
+/** Nudge apart draft prints that sit on top of each other (see relax()). Edges may still tuck under. */
 export async function makeRoom() {
   const d = await db();
   const vid = await draftVersion();
   const wall = await placedWithBoxes(vid);
   if (wall.length < 2) return 0;
-  const pos = relax(wall);
+  const pos = relax(wall, (await placerOptions()).minGap);
   const moved = wall.filter((p) => { const q = pos.get(p.id)!; return q.x !== Math.round(p.x) || q.y !== Math.round(p.y); });
   await d.transaction(async (tx) => {
     for (const p of moved) {

@@ -84,7 +84,7 @@ export async function putOnWall(printId: string) {
   revalidatePath('/admin');
 }
 
-/** Wall editor: nudge prints apart so nothing overlaps. Returns how many moved. */
+/** Wall editor "Fix overlaps": nudge apart prints stacked on top of each other. Returns how many moved. */
 export async function makeRoomOnWall() {
   await requireAdmin();
   return makeRoom();
