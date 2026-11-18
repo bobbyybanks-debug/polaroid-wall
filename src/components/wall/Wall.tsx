@@ -42,10 +42,6 @@ export default function Wall({ layout, openNumber }: { layout: WallLayout; openN
         <button className="ibtn close" id="vclose" type="button" aria-label="Close"><Close /></button>
         <button className="ibtn side prev" id="vprev" type="button" aria-label="Previous print"><Chevron dir="prev" /></button>
         <button className="ibtn side next" id="vnext" type="button" aria-label="Next print"><Chevron dir="next" /></button>
-        <div className="pill hint mono vhint">
-          <span className="for-pointer">← → to browse&nbsp;&nbsp;·&nbsp;&nbsp;Pinch to zoom&nbsp;&nbsp;·&nbsp;&nbsp;Esc to close</span>
-          <span className="for-touch">Swipe to browse&nbsp;&nbsp;·&nbsp;&nbsp;Pinch to zoom</span>
-        </div>
       </div>
     </div>
   );
