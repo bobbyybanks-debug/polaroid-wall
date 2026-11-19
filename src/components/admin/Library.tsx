@@ -90,6 +90,7 @@ export default function Library({ data }: { data: LibraryData }) {
           onChange={(e) => { const f = [...(e.target.files ?? [])]; if (f.length) up.add(f); e.target.value = ''; }} />
       </div>
 
+      {data.staleCopies > 0 && <RefreshCopiesBanner count={data.staleCopies} />}
       {data.rescans > 0 && <RescanBanner count={data.rescans} />}
 
       {!data.storageReady && (
@@ -258,6 +259,46 @@ function ReplaceLink({ r }: { r: LibraryRow }) {
       onClick={(e) => { e.stopPropagation(); start(async () => { await replaceWithRescan(r.id); router.refresh(); }); }}>
       {pending ? 'Replacing…' : r.issue?.startsWith('Replaced by') ? 'Swap back' : `Replace ${r.duplicateOf}`}
     </button>
+  );
+}
+
+/** Rebuilds web copies cropped by the old auto-fit, a few minutes per call, until none are left. */
+function RefreshCopiesBanner({ count }: { count: number }) {
+  const router = useRouter();
+  const [state, setState] = useState<{ busy: boolean; done: number; error: string | null; finished: boolean }>({ busy: false, done: 0, error: null, finished: false });
+  const go = async () => {
+    setState({ busy: true, done: 0, error: null, finished: false });
+    let done = 0;
+    try {
+      for (let round = 0; round < 20; round++) {
+        const res = await fetch('/api/admin/refresh-copies', { method: 'POST' });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error ?? `The refresh stopped (${res.status}).`);
+        done += body.refreshed?.length ?? 0;
+        setState((s) => ({ ...s, done }));
+        if (!body.remaining || !body.refreshed?.length) {
+          if (body.failed?.length) throw new Error(`Couldn't refresh ${body.failed.map((f: { number: string }) => f.number).join(', ')}.`);
+          break;
+        }
+      }
+      setState({ busy: false, done, error: null, finished: true });
+    } catch (e) {
+      setState({ busy: false, done, error: (e as Error).message, finished: false });
+    }
+    router.refresh();
+  };
+  return (
+    <div className="banner">
+      <span>
+        {state.finished ? `Done: ${state.done} print${state.done === 1 ? '' : 's'} now show the whole scan.`
+          : state.busy ? `Refreshing web copies… ${state.done} of ${count} done. Keep this page open.`
+          : state.error ? `${state.error} ${state.done ? `${state.done} done so far. ` : ''}Try again.`
+          : `${count} print${count === 1 ? ' was' : 's were'} cropped by the old auto-fit. Refresh ${count === 1 ? 'its copy' : 'their copies'} so ${count === 1 ? 'it shows' : 'they show'} the whole scan.`}
+      </span>
+      {!state.finished && (
+        <button className="btn dark" disabled={state.busy} onClick={go}>{state.busy ? 'Refreshing…' : 'Refresh copies'}</button>
+      )}
+    </div>
   );
 }
 

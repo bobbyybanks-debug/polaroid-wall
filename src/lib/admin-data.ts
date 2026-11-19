@@ -3,6 +3,7 @@ import { and, desc, eq, gt, inArray, ne } from 'drizzle-orm';
 import { db, schema } from './db';
 import { env } from './env';
 import { draftVersion, sharperRescans } from './placement/service';
+import { staleCopies } from './maintenance';
 
 export type LibraryRow = {
   id: string; number: string; filename: string; originalId: string; mime: string; bytes: number;
@@ -19,6 +20,8 @@ export type LibraryData = {
   storageReady: boolean;
   /** How many sharper rescans are waiting to replace the prints they match. */
   rescans: number;
+  /** Prints whose web copies were cropped by the old auto-fit and need rebuilding. */
+  staleCopies: number;
 };
 
 const thumbUrl = (id: string, version: string | null, sizes: number[] | null) =>
@@ -60,6 +63,7 @@ export async function libraryData(): Promise<LibraryData> {
     },
     storageReady: !!setup,
     rescans: sharper.size,
+    staleCopies: (await staleCopies()).length,
   };
 }
 
