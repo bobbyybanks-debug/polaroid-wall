@@ -185,7 +185,7 @@ export default function WallEditor({ layout, changes, history, focus }: { layout
       {!preview && drafts.length > 0 && (
         <div className="fl new" onPointerDown={(e) => e.stopPropagation()}>
           <div className="row" style={{ justifyContent: 'space-between' }}><b style={{ fontWeight: 500 }}>New prints</b><span className="num muted">{drafts.length}</span></div>
-          <p className="note">Placed tight against the wall&apos;s edge; the wall grows outward as you add more. Gold outlines aren&apos;t live until you publish.</p>
+          <p className="note">Placed automatically in the pile, with random size and tilt; the wall grows outward as you add more. Gold outlines aren&apos;t live until you publish.</p>
           <div className="grid">
             {drafts.map((p) => (
               <button key={p.id} className={p.id === sel ? 'on' : ''} title={p.n}

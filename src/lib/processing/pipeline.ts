@@ -18,6 +18,7 @@ import { db, schema } from '../db';
 import { downloadOriginal, putCopy, copyKey, deleteCopies } from '../storage';
 import { LIMITS } from '../limits';
 import { detectAndPlan, filmFromRatio } from './detect';
+import { autoFitRect } from './autofit';
 import { suggestPlacement } from '../placement/service';
 
 sharp.cache(false);
@@ -143,26 +144,6 @@ function iccName(icc: Buffer): string | null {
 }
 
 /**
- * Box of rows/columns that are (almost) fully opaque. PNG cut-outs have a soft transparent edge
- * whose hidden colour is usually black; cropping to this box drops it.
- */
-export async function opaqueBox(file: string) {
-  const { data, info } = await open(file).rotate().extractChannel('alpha').raw().toBuffer({ resolveWithObject: true });
-  const W = info.width, H = info.height;
-  const rowOk = (y: number) => { let n = 0; for (let x = 0; x < W; x++) if (data[y * W + x] >= 250) n++; return n >= W * 0.97; };
-  const colOk = (x: number, y0: number, y1: number) => { let n = 0; for (let y = y0; y <= y1; y++) if (data[y * W + x] >= 250) n++; return n >= (y1 - y0 + 1) * 0.97; };
-  let top = 0, bottom = H - 1;
-  while (top < bottom && !rowOk(top)) top++;
-  while (bottom > top && !rowOk(bottom)) bottom--;
-  let left = 0, right = W - 1;
-  while (left < right && !colOk(left, top, bottom)) left++;
-  while (right > left && !colOk(right, top, bottom)) right--;
-  const w = right - left + 1, h = bottom - top + 1;
-  // Only trust it if it keeps most of the image (a mostly transparent file is left alone).
-  return w * h >= W * H * 0.5 && (w < W || h < H) ? { left, top, width: w, height: h } : null;
-}
-
-/**
  * Make web copies, fingerprint, de-duplicate and place one print.
  * With { copiesOnly: true } it only rebuilds the web copies (status, duplicates and placement stay).
  */
@@ -174,19 +155,23 @@ export async function processPrint(printId: string, opts: { copiesOnly?: boolean
   const [clean] = await d.select().from(schema.cleanup).where(eq(schema.cleanup.printId, printId));
   const file = await localOriginal(orig.storageKey);
   const W = orig.width!, H = orig.height!;
-  const rect = clean?.mode === 'trim' ? clean.rect : null;
   const hasAlpha = !!(await open(file).metadata()).hasAlpha;
+  // A trim set on the scanner bed (or by hand) wins. Otherwise auto-fit: straighten a crooked scan
+  // and crop to the print's own edges, unless Bobby switched trimming off for this print.
+  const userOff = clean?.approved && clean.mode === 'off';
+  const rect = clean?.mode === 'trim' ? clean.rect : userOff ? null : await autoFitRect(file, W, H, hasAlpha);
+
+  // Copies are content-hashed: same scan + same crop = same version.
+  const version = crypto.createHash('sha1')
+    .update(`${PIPELINE}|${orig.sha256}|${JSON.stringify(rect)}${hasAlpha ? '|alpha-white' : ''}`).digest('hex').slice(0, 10);
+  if (opts.copiesOnly && version === print.copyVersion) return;
 
   // 1. Upright, trimmed, sRGB 8-bit working copy, at most 3200 px on the long edge.
-  //    Transparent areas become white (never black), and a soft transparent edge is cropped off.
+  //    Transparent areas become white, never black.
   let work = open(file).rotate();
   if (hasAlpha) work = work.flatten({ background: '#ffffff' });
   let cw = W, ch = H;
-  const edge = hasAlpha && !rect ? await opaqueBox(file) : null;
-  if (edge) {
-    work = work.extract(edge);
-    cw = edge.width; ch = edge.height;
-  } else if (rect) {
+  if (rect) {
     if (Math.abs(rect.angle) > 0.05) {
       // Materialise the rotation once so the crop maths stays exact.
       const rotated = await work.rotate(-rect.angle, { background: '#ffffff' }).raw().toBuffer({ resolveWithObject: true });
@@ -228,9 +213,7 @@ export async function processPrint(printId: string, opts: { copiesOnly?: boolean
   }
   const borderInk = ink / n;
 
-  // 3. Web copies. Content-hashed folder so every version caches forever.
-  const version = crypto.createHash('sha1')
-    .update(`${PIPELINE}|${orig.sha256}|${JSON.stringify(rect)}${hasAlpha ? '|alpha-white' : ''}`).digest('hex').slice(0, 10);
+  // 3. Web copies, in the content-hashed folder for this version (cached forever).
   const sizes = COPY_SIZES.filter((s) => s < longEdge);
   if (!sizes.length || sizes[sizes.length - 1] < Math.min(longEdge, 3200)) sizes.push(Math.min(longEdge, 3200));
   const rows: (typeof schema.copies.$inferInsert)[] = [];

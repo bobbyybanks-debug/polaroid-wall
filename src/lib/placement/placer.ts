@@ -1,8 +1,11 @@
 /**
- * Suggests where a new print goes on the wall. Pure function: no database, no randomness
+ * Suggests where a new print goes on the wall. Pure functions: no database, no randomness
  * other than a generator seeded by the print id, so asking twice gives the same answer.
  *
- * Rules:
+ * Default: suggestCollage(), a cluttered, natural pile modelled on the wall Bobby arranged by hand
+ * (Nov 18): ~30% Large, mostly slight tilts with some bigger ones, prints overlapping each other.
+ *
+ * suggest() below is the tidy mode, used when overlaps are switched off. Its rules:
  * - Prints already on the wall are fixed obstacles; they never move.
  * - Dense like the approved Figma wall: a new print sits MIN_GAP..MAX_GAP from its neighbours
  *   (−14 to +24 px, so edges may tuck slightly under/over each other, never deeper).
@@ -33,6 +36,8 @@ export const MAX_GAP = 24;
 export const ASPECT = 1.6;
 
 export type PlacerOptions = {
+  /** 'collage' (default): cluttered and overlapping. 'tidy': the dense, non-burying rhythm. */
+  mode?: 'collage' | 'tidy';
   /** Override MIN_GAP (e.g. 8 when edge overlaps are turned off). */
   minGap?: number;
   /** Override MAX_GAP. */
@@ -114,6 +119,7 @@ class Coverage {
   }
 }
 const clampI = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
+const inter = (a: Rect, b: Rect) => Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0)) * Math.max(0, Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0));
 
 /** Row centres of the existing wall (clusters of print centres by height). */
 function rows(prints: Placed[]) {
@@ -131,6 +137,7 @@ function rows(prints: Placed[]) {
 export function suggest(
   id: string, box: { w: number; h: number }, wall: Placed[], opts: PlacerOptions = {}, forceLarge?: boolean,
 ): Suggestion {
+  if ((opts.mode ?? 'collage') === 'collage') return suggestCollage(id, box, wall, forceLarge);
   const minGap = opts.minGap ?? MIN_GAP;
   const maxGap = Math.max(minGap + 8, opts.maxGap ?? MAX_GAP);
   const r = rng(id);
@@ -211,4 +218,81 @@ export function relax(prints: Placed[], minGap = MIN_GAP, iterations = 300): Map
     if (!moved) break;
   }
   return new Map(ps.map((p) => [p.id, { x: Math.round(p.x), y: Math.round(p.y) }]));
+}
+
+/* ---------------- Collage (default) ---------------- */
+
+export const COLLAGE = {
+  /** Share of prints that come out Large. */
+  largeShare: 0.3,
+  /** Width ÷ height the pile grows towards. */
+  aspect: 1.5,
+  /** A new print overlaps the pile by this much of its own area (each print picks its own target). */
+  overlapMin: 0.04, overlapMax: 0.4,
+  /** It may cover at most this much of any one print under it. */
+  maxCoverEach: 0.25,
+};
+
+/** Rotation like the hand-made wall: 70% within ±3°, 18% at 3–7°, 12% at 7–14°. */
+export function collageRotation(r: () => number) {
+  const u = r(), sign = r() < 0.5 ? -1 : 1;
+  if (u < 0.7) return Math.round((r() * 6 - 3) * 100) / 100;
+  if (u < 0.88) return Math.round(sign * (3 + r() * 4) * 100) / 100;
+  return Math.round(sign * (7 + r() * 7) * 100) / 100;
+}
+
+/**
+ * Cluttered placement. The new print lands on top, overlapping the pile (4–40% of its own area,
+ * aiming at a target it picks at random), never covering more than a quarter of any one print,
+ * and the pile grows out from its middle on a landscape outline. Random size (~30% Large) and tilt.
+ */
+export function suggestCollage(id: string, box: { w: number; h: number }, wall: Placed[], forceLarge?: boolean): Suggestion {
+  const r = rng(id);
+  const rotation = collageRotation(r);
+  const wantLarge = forceLarge ?? r() < COLLAGE.largeShare;
+  const target = 0.08 + r() * 0.22;
+  const layer = wall.reduce((m, p) => Math.max(m, p.layer), 0) + 1;
+  if (!wall.length) return { x: 0, y: 0, rotation, large: wantLarge, layer };
+
+  const boxes = wall.map((p) => ({ p, q: aabb(p.x, p.y, p.w, p.h, p.rotation), area: p.w * p.h }));
+  const ext = boxes.reduce((b, { q }) => ({ x0: Math.min(b.x0, q.x0), y0: Math.min(b.y0, q.y0), x1: Math.max(b.x1, q.x1), y1: Math.max(b.y1, q.y1) }),
+    { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
+  const cx = (ext.x0 + ext.x1) / 2, cy = (ext.y0 + ext.y1) / 2;
+  // Grid index so each candidate only checks the prints near it.
+  const CELL = 320, index = new Map<string, number[]>();
+  boxes.forEach(({ q }, i) => {
+    for (let gx = Math.floor(q.x0 / CELL); gx <= Math.floor(q.x1 / CELL); gx++) for (let gy = Math.floor(q.y0 / CELL); gy <= Math.floor(q.y1 / CELL); gy++) {
+      const k = `${gx},${gy}`; (index.get(k) ?? index.set(k, []).get(k)!).push(i);
+    }
+  });
+  const nearby = (q: Rect) => {
+    const out = new Set<number>();
+    for (let gx = Math.floor(q.x0 / CELL); gx <= Math.floor(q.x1 / CELL); gx++) for (let gy = Math.floor(q.y0 / CELL); gy <= Math.floor(q.y1 / CELL); gy++) for (const i of index.get(`${gx},${gy}`) ?? []) out.add(i);
+    return out;
+  };
+
+  const attempt = (large: boolean): Suggestion | null => {
+    const w = large ? box.w * 1.5 : box.w, h = large ? box.h * 1.5 : box.h;
+    const q0 = aabb(0, 0, w, h, rotation), hw = (q0.x1 - q0.x0) / 2, hh = (q0.y1 - q0.y0) / 2;
+    const cov = new Coverage(wall, Math.max(hw, hh) * 2 + 64);
+    let best: { s: number; x: number; y: number } | null = null;
+    for (let y = ext.y0 - hh * 0.6; y <= ext.y1 + hh * 0.6; y += 16) {
+      for (let x = ext.x0 - hw * 0.6; x <= ext.x1 + hw * 0.6; x += 16) {
+        const q = { x0: x - hw, y0: y - hh, x1: x + hw, y1: y + hh };
+        const ov = cov.covered(q);
+        if (ov < COLLAGE.overlapMin || ov > COLLAGE.overlapMax) continue;
+        let buries = false;
+        for (const i of nearby(q)) if (inter(q, boxes[i].q) / boxes[i].area > COLLAGE.maxCoverEach) { buries = true; break; }
+        if (buries) continue;
+        if (large && wall.some((p) => p.large && Math.hypot(p.x - x, p.y - y) < Math.max(w, h) * 0.9)) continue;
+        const s = -Math.hypot((x - cx) / COLLAGE.aspect, y - cy) - Math.abs(ov - target) * 400 + r() * 70;
+        if (!best || s > best.s) best = { s, x, y };
+      }
+    }
+    return best ? { x: Math.round(best.x), y: Math.round(best.y), rotation, large, layer } : null;
+  };
+
+  return (wantLarge && attempt(true)) || attempt(false) || {
+    x: Math.round(cx), y: Math.round(ext.y1 + box.h * 0.35), rotation, large: false, layer,
+  };
 }

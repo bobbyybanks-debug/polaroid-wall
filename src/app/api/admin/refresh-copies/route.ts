@@ -1,5 +1,5 @@
 import { revalidateTag } from 'next/cache';
-import { and, eq, inArray, notInArray } from 'drizzle-orm';
+import { eq, notInArray } from 'drizzle-orm';
 import { apiAdmin } from '@/lib/auth';
 import { db, schema } from '@/lib/db';
 import { processPrint } from '@/lib/processing/pipeline';
@@ -7,13 +7,14 @@ import { processPrint } from '@/lib/processing/pipeline';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
-const DONE_KEY = 'copiesRefreshed:alpha-white';
+const DONE_KEY = 'copiesRefreshed:autofit-v1';
 
 /**
- * One-off maintenance: rebuild the web copies of prints scanned as PNG/TIFF, so transparent
- * edges come out white instead of as a black frame. Only the copies change: status, duplicates
- * and placement stay. Works through as many prints as fit in ~4 minutes; open it again if it
- * says some are left.
+ * One-off maintenance: rebuild every print's web copies with the current pipeline (transparent
+ * edges white, crooked scans straightened and cropped to the print's own edges). Prints whose
+ * copies wouldn't change are skipped quickly. Only the copies change: status, duplicates and
+ * placement stay. Works through as many prints as fit in ~4 minutes; open it again if it says
+ * some are left.
  */
 export async function GET() {
   const admin = await apiAdmin();
@@ -25,11 +26,7 @@ export async function GET() {
 
   const candidates = await d.select({ id: schema.prints.id, number: schema.prints.number })
     .from(schema.prints)
-    .innerJoin(schema.originals, eq(schema.originals.id, schema.prints.originalId))
-    .where(and(
-      inArray(schema.originals.mime, ['image/png', 'image/tiff']),
-      notInArray(schema.prints.status, ['processing', 'failed']),
-    ));
+    .where(notInArray(schema.prints.status, ['processing', 'failed']));
   const todo = candidates.filter((c) => !done.has(c.id));
 
   const started = Date.now();

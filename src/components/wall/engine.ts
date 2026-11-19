@@ -31,7 +31,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
   const isNarrow = () => innerWidth < 700;
   const easeOut = (k: number) => 1 - Math.pow(1 - k, 3);
   const easeInOut = (k: number) => (k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
-  const MAX_Z = 2, FLOOR_Z = .35;
+  const MAX_Z = 2, FLOOR_Z = .35, OPEN_Z = .62;
   const frame = layout.frame;
   const cleanups: (() => void)[] = [];
   const on = <K extends keyof WindowEventMap>(t: EventTarget, type: K | string, fn: (e: never) => void, o?: AddEventListenerOptions) => {
@@ -121,8 +121,12 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     return Math.min((innerWidth - 2 * mx) / (bounds.maxX - bounds.minX), (innerHeight - 2 * my) / (bounds.maxY - bounds.minY));
   }
   function initialZ() {
-    // Desktop opens on the whole wall. Phones open on the wall's height so prints stay readable.
-    if (!isNarrow()) return clamp(fitZ(), FLOOR_Z, 1.2);
+    // Desktop opens close in (about 62%, the view Bobby picked on Nov 18), and always fills the
+    // window with prints. Phones open on the wall's height so prints stay readable.
+    if (!isNarrow()) {
+      const cover = Math.max(innerWidth / (bounds.maxX - bounds.minX), innerHeight / (bounds.maxY - bounds.minY));
+      return Math.min(1.2, Math.max(OPEN_Z, cover));
+    }
     const fill = Math.max(Math.ceil(innerHeight / frame.h * 100) / 100, Math.ceil(innerWidth / frame.w * 100) / 100);
     return Math.min(1.2, fill);
   }

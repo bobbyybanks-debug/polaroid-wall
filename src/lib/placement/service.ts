@@ -5,11 +5,11 @@
  * Publishing snapshots the draft into a new published version (immutable) and archives the
  * previous one, so any publish can be rolled back. Visitors only ever see the published one.
  */
-import { and, desc, eq, inArray } from 'drizzle-orm';
-import { db, schema } from '../db';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { db, schema, type DB } from '../db';
 import { env } from '../env';
 import { FILM_LONG_MM, PX_PER_MM } from '../processing/detect';
-import { relax, suggest, type Placed } from './placer';
+import { relax, suggest, type Placed, type PlacerOptions } from './placer';
 import type { Print } from '../db/schema';
 
 export const LARGE = 1.5;
@@ -37,8 +37,8 @@ export async function draftVersion(): Promise<number> {
   return v.id;
 }
 
-async function placedWithBoxes(versionId: number): Promise<Placed[]> {
-  const d = await db();
+async function placedWithBoxes(versionId: number, ex?: DB): Promise<Placed[]> {
+  const d = ex ?? await db();
   const rows = await d.select({ pl: schema.placements, pr: schema.prints }).from(schema.placements)
     .innerJoin(schema.prints, eq(schema.prints.id, schema.placements.printId))
     .where(eq(schema.placements.versionId, versionId));
@@ -48,43 +48,59 @@ async function placedWithBoxes(versionId: number): Promise<Placed[]> {
   });
 }
 
-/** Placement rhythm: dense with slight edge overlaps by default; the wall setting can turn overlaps off. */
-async function placerOptions(): Promise<{ minGap?: number }> {
+/** Placement style: a cluttered, overlapping collage by default; the wall setting can switch overlaps off. */
+async function placerOptions(): Promise<PlacerOptions> {
   const d = await db();
   const [row] = await d.select().from(schema.settings).where(eq(schema.settings.key, 'allowOverlap'));
-  return row && row.value === false ? { minGap: 8 } : {};
+  return row && row.value === false ? { mode: 'tidy', minGap: 8 } : { mode: 'collage' };
+}
+
+/**
+ * Several uploads finish at once, so placements are taken one at a time: a transaction-scoped
+ * lock means each new print sees the ones placed just before it (no two land on the same spot).
+ */
+async function placing<T>(fn: (tx: DB) => Promise<T>): Promise<T> {
+  const d = await db();
+  return d.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(7342001)`);
+    return fn(tx as unknown as DB);
+  });
 }
 
 /** Add a ready print to the draft at its suggested spot (no-op if it's already there). */
 export async function suggestPlacement(printId: string) {
-  const d = await db();
   const vid = await draftVersion();
-  const [exists] = await d.select({ id: schema.placements.id }).from(schema.placements)
-    .where(and(eq(schema.placements.versionId, vid), eq(schema.placements.printId, printId)));
-  if (exists) return;
-  const [p] = await d.select().from(schema.prints).where(eq(schema.prints.id, printId));
-  if (!p) return;
-  const wall = await placedWithBoxes(vid);
-  const s = suggest(p.id, boxFor(p), wall, await placerOptions());
-  const size = s.large ? 'large' : 'standard';
-  await d.insert(schema.placements).values({
-    versionId: vid, printId, x: s.x, y: s.y, rotation: s.rotation, size, layer: s.layer,
-    locked: false, source: 'suggested', suggested: { x: s.x, y: s.y, rotation: s.rotation, size },
+  const opts = await placerOptions();
+  await placing(async (tx) => {
+    const [exists] = await tx.select({ id: schema.placements.id }).from(schema.placements)
+      .where(and(eq(schema.placements.versionId, vid), eq(schema.placements.printId, printId)));
+    if (exists) return;
+    const [p] = await tx.select().from(schema.prints).where(eq(schema.prints.id, printId));
+    if (!p) return;
+    const wall = await placedWithBoxes(vid, tx);
+    const s = suggest(p.id, boxFor(p), wall, opts);
+    const size = s.large ? 'large' : 'standard';
+    await tx.insert(schema.placements).values({
+      versionId: vid, printId, x: s.x, y: s.y, rotation: s.rotation, size, layer: s.layer,
+      locked: false, source: 'suggested', suggested: { x: s.x, y: s.y, rotation: s.rotation, size },
+    });
   });
 }
 
 /** Re-run the suggestion for a draft print (Reset to suggestion / after a size change). */
 export async function resuggest(printId: string, forceSize?: 'standard' | 'large') {
-  const d = await db();
   const vid = await draftVersion();
-  await d.delete(schema.placements).where(and(eq(schema.placements.versionId, vid), eq(schema.placements.printId, printId)));
-  const [p] = await d.select().from(schema.prints).where(eq(schema.prints.id, printId));
-  const wall = await placedWithBoxes(vid);
-  const s = suggest(p.id, boxFor(p), wall, await placerOptions(), forceSize ? forceSize === 'large' : undefined);
-  const size = s.large ? 'large' : 'standard';
-  await d.insert(schema.placements).values({
-    versionId: vid, printId, x: s.x, y: s.y, rotation: s.rotation, size, layer: s.layer,
-    locked: false, source: forceSize ? 'manual' : 'suggested', suggested: { x: s.x, y: s.y, rotation: s.rotation, size },
+  const opts = await placerOptions();
+  await placing(async (tx) => {
+    await tx.delete(schema.placements).where(and(eq(schema.placements.versionId, vid), eq(schema.placements.printId, printId)));
+    const [p] = await tx.select().from(schema.prints).where(eq(schema.prints.id, printId));
+    const wall = await placedWithBoxes(vid, tx);
+    const s = suggest(p.id, boxFor(p), wall, opts, forceSize ? forceSize === 'large' : undefined);
+    const size = s.large ? 'large' : 'standard';
+    await tx.insert(schema.placements).values({
+      versionId: vid, printId, x: s.x, y: s.y, rotation: s.rotation, size, layer: s.layer,
+      locked: false, source: forceSize ? 'manual' : 'suggested', suggested: { x: s.x, y: s.y, rotation: s.rotation, size },
+    });
   });
 }
 
