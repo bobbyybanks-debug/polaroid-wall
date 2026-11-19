@@ -31,7 +31,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
   const isNarrow = () => innerWidth < 700;
   const easeOut = (k: number) => 1 - Math.pow(1 - k, 3);
   const easeInOut = (k: number) => (k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
-  const MAX_Z = 2, FLOOR_Z = .35, OPEN_Z = .62;
+  const MAX_Z = 2, OPEN_Z = .62;
   const frame = layout.frame;
   const cleanups: (() => void)[] = [];
   const on = <K extends keyof WindowEventMap>(t: EventTarget, type: K | string, fn: (e: never) => void, o?: AddEventListenerOptions) => {
@@ -98,6 +98,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
   const bounds = prints.length ? prints.reduce((r, p) => ({
     minX: Math.min(r.minX, p.minX), maxX: Math.max(r.maxX, p.maxX), minY: Math.min(r.minY, p.minY), maxY: Math.max(r.maxY, p.maxY),
   }), { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }) : { minX: frame.x, maxX: frame.x + frame.w, minY: frame.y, maxY: frame.y + frame.h };
+  const canvas = canvasAround(prints, bounds);
 
   // Reading order for ← →: rows by height on the wall, then left to right.
   const seq = (() => {
@@ -111,52 +112,33 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
   const seqIndex = new Map(seq.map((p, i) => [p, i]));
 
   /* ---------------- Camera ---------------- */
-  let z = .7, tx = 0, ty = 0, minZ = FLOOR_Z;
+  let z = .7, tx = 0, ty = 0, minZ = .35;
   let camAnim: { cancel(): void } | null = null, inertiaRaf = 0;
   let movingTimer: ReturnType<typeof setTimeout> | undefined, tierTimer: ReturnType<typeof setTimeout> | undefined;
 
-  /** Zoom at which the whole wall fits the window with a margin. */
-  function fitZ() {
-    const mx = isNarrow() ? 16 : 132, my = isNarrow() ? 16 : 80;
-    return Math.min((innerWidth - 2 * mx) / (bounds.maxX - bounds.minX), (innerHeight - 2 * my) / (bounds.maxY - bounds.minY));
+  // The canvas is the pile itself (sparse edges trimmed, see canvasAround): the view never shows
+  // past it, so the screen is always full of prints.
+  /** Smallest zoom at which the canvas still fills the window. */
+  function coverZ() {
+    return Math.max(innerWidth / canvas.w, innerHeight / canvas.h);
   }
   function initialZ() {
-    // Desktop opens close in (about 62%, the view Bobby picked on Nov 18), and always fills the
-    // window with prints. Phones open on the wall's height so prints stay readable.
-    if (!isNarrow()) {
-      const cover = Math.max(innerWidth / (bounds.maxX - bounds.minX), innerHeight / (bounds.maxY - bounds.minY));
-      return Math.min(1.2, Math.max(OPEN_Z, cover));
-    }
-    const fill = Math.max(Math.ceil(innerHeight / frame.h * 100) / 100, Math.ceil(innerWidth / frame.w * 100) / 100);
-    return Math.min(1.2, fill);
+    // Desktop opens close in (about 62%, the view Bobby picked on Nov 18). Phones open as far out
+    // as the canvas allows.
+    return Math.min(1.2, isNarrow() ? coverZ() : Math.max(OPEN_Z, coverZ()));
   }
   function initialView() {
     const iz = initialZ();
-    if (!isNarrow()) {
-      const cx = (bounds.minX + bounds.maxX) / 2, cy = (bounds.minY + bounds.maxY) / 2;
-      return { z: iz, tx: innerWidth / 2 - cx * iz, ty: innerHeight / 2 - cy * iz };
-    }
-    return { z: iz, tx: (innerWidth - frame.w * iz) / 2 - frame.x * iz, ty: (innerHeight - frame.h * iz) / 2 - frame.y * iz };
+    return { z: iz, tx: innerWidth / 2 - (canvas.x + canvas.w / 2) * iz, ty: innerHeight / 2 - (canvas.y + canvas.h / 2) * iz };
   }
   function computeLimits() {
-    minZ = Math.max(FLOOR_Z, Math.min(fitZ(), initialZ()));
+    minZ = Math.min(MAX_Z, coverZ());
   }
   function clampPan() {
-    const vw = innerWidth, vh = innerHeight;
-    const L = bounds.minX * z + tx, R = bounds.maxX * z + tx, T = bounds.minY * z + ty, B = bounds.maxY * z + ty;
-    const nx = Math.min(R - L, vw) / 3, ny = Math.min(B - T, vh) / 3;
-    if (R < nx) tx += nx - R; else if (L > vw - nx) tx -= L - (vw - nx);
-    if (B < ny) ty += ny - B; else if (T > vh - ny) ty -= T - (vh - ny);
-    // Once the whole archive fits on an axis, ease it to the middle as you zoom out.
-    const settle = (lo: number, size: number, view: number, margin: number) => {
-      if (size >= view) return 0;
-      const w = clamp((view - size) / (view * .15), 0, 1);
-      const minL = Math.min(margin, (view - size) / 2), maxL = Math.max(view - size - margin, (view - size) / 2);
-      return (clamp(lo, minL, maxL) - lo) * w;
-    };
-    const mx = isNarrow() ? 16 : 132, my = isNarrow() ? 16 : 80;
-    tx += settle(bounds.minX * z + tx, (bounds.maxX - bounds.minX) * z, vw, mx);
-    ty += settle(bounds.minY * z + ty, (bounds.maxY - bounds.minY) * z, vh, my);
+    const fit = (t: number, lo: number, size: number, view: number) =>
+      size * z <= view ? (view - size * z) / 2 - lo * z : clamp(t, view - (lo + size) * z, -lo * z);
+    tx = fit(tx, canvas.x, canvas.w, innerWidth);
+    ty = fit(ty, canvas.y, canvas.h, innerHeight);
   }
   function apply() {
     world.style.transform = `translate(${tx}px, ${ty}px) scale(${z})`;
@@ -474,7 +456,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     document.title = 'Bobby Banks — Polaroids';
   }
 
-  function switchTo(q: P | undefined, dir: number) {
+  function switchTo(q: P | undefined, dir: number, axis: 'x' | 'y' = 'x') {
     const p = V.p;
     if (!q || !p || q === p) return;
     V.anim?.cancel();
@@ -484,7 +466,8 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     vstage.appendChild(ghost);
     const g0 = { cx: V.cx, s: V.s, w: V.fit.w, h: V.fit.h, cy: V.cy };
     tween(240, (k) => {
-      ghost.style.transform = `translate(${g0.cx - g0.w / 2 - dir * 70 * k}px, ${g0.cy - g0.h / 2}px) scale(${g0.s})`;
+      const dx = axis === 'x' ? dir * 70 * k : 0, dy = axis === 'y' ? dir * 70 * k : 0;
+      ghost.style.transform = `translate(${g0.cx - g0.w / 2 - dx}px, ${g0.cy - g0.h / 2 - dy}px) scale(${g0.s})`;
       ghost.style.opacity = String(1 - k);
     }, () => ghost.remove());
     p.el.classList.remove('away');
@@ -494,7 +477,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     vimg.alt = 'Print ' + q.n;
     setFit(q);
     const rest = restPose();
-    Object.assign(V, rest, { cx: rest.cx + dir * 70 });
+    Object.assign(V, rest, axis === 'x' ? { cx: rest.cx + dir * 70 } : { cy: rest.cy + dir * 70 });
     vimg.style.opacity = '0';
     drawImg();
     tween(280, (k) => { vimg.style.opacity = String(k); });
@@ -507,6 +490,27 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     if (!V.open || !V.p) return;
     const i = seqIndex.get(V.p)!;
     switchTo(seq[(i + dir + seq.length) % seq.length], dir);
+  }
+  /** ↑ / ↓: the print just above or below on the wall; past the top or bottom, wraps round. */
+  function goVertical(dir: number) {
+    if (!V.open || !V.p) return;
+    const p = V.p;
+    let best: P | undefined, score = Infinity;
+    for (const q of prints) {
+      const dy = (q.cy - p.cy) * dir, dx = Math.abs(q.cx - p.cx);
+      if (q === p || dy < 40) continue;
+      const s = dy + dx * 2.5;
+      if (s < score) { score = s; best = q; }
+    }
+    if (!best) {
+      // Wrap: the print nearest this column at the far edge.
+      for (const q of prints) {
+        if (q === p) continue;
+        const s = (q.cy - p.cy) * dir + Math.abs(q.cx - p.cx) * 0.5;
+        if (s < score) { score = s; best = q; }
+      }
+    }
+    switchTo(best, dir, 'y');
   }
 
   function clampViewerPan(cx: number, cy: number, s: number) {
@@ -627,6 +631,8 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
       if (e.key === 'Escape') { e.preventDefault(); closeViewer(); }
       else if (e.key === 'ArrowRight') { e.preventDefault(); go(1); }
       else if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); goVertical(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); goVertical(-1); }
       else if (e.key === '+' || e.key === '=') zoomViewerAt(V.s * 1.25, innerWidth / 2, innerHeight / 2, 200);
       else if (e.key === '-') zoomViewerAt(V.s / 1.25, innerWidth / 2, innerHeight / 2, 200);
       else if (e.key === 'Tab') {
@@ -695,4 +701,43 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     for (const c of cleanups) c();
     clearTimeout(movingTimer); clearTimeout(tierTimer);
   };
+}
+
+/**
+ * The wall's canvas: the prints' bounding box with its sparse fringe trimmed, so panning never
+ * shows empty background beyond the pile. A side moves in only while its edge is partly empty and
+ * every print keeps at least 80% of its width and 55% of its height on the canvas (the height is
+ * trimmed harder: the wall reads wide and full).
+ */
+function canvasAround(boxes: { minX: number; maxX: number; minY: number; maxY: number }[], b: { minX: number; maxX: number; minY: number; maxY: number }) {
+  let r = { x0: b.minX, x1: b.maxX, y0: b.minY, y1: b.maxY };
+  if (boxes.length > 1) {
+    const KEEP_X = .8, KEEP_Y = .55, STEP = 12, N = 40;
+    const ok = (q: typeof r) => boxes.every((p) =>
+      (Math.min(p.maxX, q.x1) - Math.max(p.minX, q.x0)) / (p.maxX - p.minX) >= KEEP_X &&
+      (Math.min(p.maxY, q.y1) - Math.max(p.minY, q.y0)) / (p.maxY - p.minY) >= KEEP_Y);
+    const covered = (x: number, y: number) => boxes.some((p) => x >= p.minX && x <= p.maxX && y >= p.minY && y <= p.maxY);
+    /** Share of an edge with no print on it. */
+    const empty = (q: typeof r, side: number) => {
+      let e = 0;
+      for (let k = 0; k < N; k++) {
+        const t = (k + .5) / N, x = q.x0 + t * (q.x1 - q.x0), y = q.y0 + t * (q.y1 - q.y0);
+        if (!(side === 0 ? covered(x, q.y0 + 4) : side === 1 ? covered(x, q.y1 - 4) : side === 2 ? covered(q.x0 + 4, y) : covered(q.x1 - 4, y))) e++;
+      }
+      return e / N;
+    };
+    for (let guard = 0; guard < 4000; guard++) {
+      let pick: typeof r | null = null, most = 0;
+      for (let side = 0; side < 4; side++) {
+        const e = empty(r, side);
+        if (e <= most) continue;
+        const q = { ...r };
+        if (side === 0) q.y0 += STEP; else if (side === 1) q.y1 -= STEP; else if (side === 2) q.x0 += STEP; else q.x1 -= STEP;
+        if (ok(q)) { pick = q; most = e; }
+      }
+      if (!pick) break;
+      r = pick;
+    }
+  }
+  return { x: r.x0, y: r.y0, w: r.x1 - r.x0, h: r.y1 - r.y0 };
 }
