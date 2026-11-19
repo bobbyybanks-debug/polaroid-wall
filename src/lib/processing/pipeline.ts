@@ -157,10 +157,11 @@ export async function processPrint(printId: string, opts: { copiesOnly?: boolean
   const file = await localOriginal(orig.storageKey);
   const W = orig.width!, H = orig.height!;
   const hasAlpha = !!(await open(file).metadata()).hasAlpha;
-  // A trim set on the scanner bed (or by hand) wins. Otherwise auto-fit: straighten a crooked scan
-  // and crop to the print's own edges, unless Bobby switched trimming off for this print.
+  // Web copies match the original scan. Only two things crop it: a trim (found on a scanner-bed
+  // capture, or set by hand), and a transparent background, which is cut away along the print's
+  // own edges (straightening it if it sits crooked). A regular scan is never cropped or rotated.
   const userOff = clean?.approved && clean.mode === 'off';
-  const rect = clean?.mode === 'trim' ? clean.rect : userOff ? null : await autoFitRect(file, W, H, hasAlpha);
+  const rect = clean?.mode === 'trim' ? clean.rect : userOff || !hasAlpha ? null : await autoFitRect(file, W, H, hasAlpha);
 
   // Copies are content-hashed: same scan + same crop = same version.
   const version = crypto.createHash('sha1')

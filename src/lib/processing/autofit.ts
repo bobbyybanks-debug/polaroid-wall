@@ -1,6 +1,8 @@
 /**
  * Auto-fit: straighten a print that was scanned a little crooked and crop it to its own edges,
- * so no scanner bed, black backing or transparent corner shows around it.
+ * so no transparent corner shows around it. The pipeline only uses it for scans with a
+ * transparent background (regular scans are shown exactly as uploaded); the corner-flood path
+ * below is kept for reference but not called.
  *
  * Works on a small copy: builds a mask of "print" pixels (from the alpha channel when the file
  * has one, otherwise by flooding the background in from the scan's corners), measures the tilt
