@@ -202,6 +202,54 @@ export async function goLive(printId: string): Promise<boolean> {
   });
 }
 
+/**
+ * A rescan takes over an existing print: the old print's spot, size, tilt and layer on the draft
+ * and live wall, and its number (so /p/<number> links keep working). The old scan is kept (an
+ * older layout version still shows it on rollback) but marked as replaced and kept off the wall.
+ * If the old print wasn't on the wall, the rescan is placed like a new upload.
+ */
+export async function replacePrint(newId: string, oldId: string): Promise<{ number: string } | null> {
+  const vid = await draftVersion();
+  const res = await placing(async (tx) => {
+    const [n] = await tx.select().from(schema.prints).where(eq(schema.prints.id, newId));
+    const [o] = await tx.select().from(schema.prints).where(eq(schema.prints.id, oldId));
+    if (!n || !o || n.id === o.id) return null;
+    const [pub] = await tx.select().from(schema.layoutVersions).where(eq(schema.layoutVersions.status, 'published')).limit(1);
+    const versions = pub ? [vid, pub.id] : [vid];
+    // The rescan's own spot (if it had one) gives way to the old print's.
+    await tx.delete(schema.placements).where(and(eq(schema.placements.printId, newId), inArray(schema.placements.versionId, versions)));
+    const moved = await tx.update(schema.placements).set({ printId: newId, updatedAt: new Date() })
+      .where(and(eq(schema.placements.printId, oldId), inArray(schema.placements.versionId, versions)))
+      .returning({ id: schema.placements.id });
+    // Swap numbers through a temporary one (numbers are unique).
+    await tx.update(schema.prints).set({ number: `~swap-${o.id}` }).where(eq(schema.prints.id, oldId));
+    await tx.update(schema.prints).set({ number: o.number, status: 'ready', issue: null, duplicateOfId: null, updatedAt: new Date() })
+      .where(eq(schema.prints.id, newId));
+    await tx.update(schema.prints).set({
+      number: n.number, status: 'duplicate', duplicateOfId: newId, updatedAt: new Date(),
+      issue: `Replaced by a rescan, which is now print ${o.number}.`,
+    }).where(eq(schema.prints.id, oldId));
+    return { number: o.number, placed: moved.length > 0 };
+  });
+  if (res && !res.placed) {
+    await suggestPlacement(newId);
+    await goLive(newId);
+  }
+  return res && { number: res.number };
+}
+
+/** Prints waiting to replace a sharper-than-before twin: [rescan id, print it replaces]. */
+export async function sharperRescans(): Promise<[string, string][]> {
+  const d = await db();
+  const all = await d.select({ id: schema.prints.id, status: schema.prints.status, dup: schema.prints.duplicateOfId, w: schema.prints.widthPx, h: schema.prints.heightPx }).from(schema.prints);
+  const byId = new Map(all.map((p) => [p.id, p]));
+  return all.filter((p) => {
+    if (!p.dup || (p.status !== 'duplicate' && p.status !== 'needs_attention')) return false;
+    const t = byId.get(p.dup);
+    return !!t && t.status !== 'duplicate' && t.dup !== p.id && !!p.w && !!p.h && !!t.w && !!t.h && p.w * p.h > t.w * t.h * 1.15;
+  }).map((p) => [p.id, p.dup!]);
+}
+
 const FRAME_MARGIN = 120;
 function frameAround(boxes: Placed[]) {
   const b = boxes.reduce((r, p) => ({

@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import type { LibraryData, LibraryRow } from '@/lib/admin-data';
 import { fmtBytes, KIND_LABEL, LIMITS, type Kind } from '@/lib/limits';
-import { setSize, dismissUpload } from '@/app/admin/actions';
+import { setSize, dismissUpload, replaceWithRescan, replaceAllRescans } from '@/app/admin/actions';
 import { Uploader, describe, type Item } from './uploader';
 
 type Tab = 'all' | 'unpublished' | 'published' | 'attention';
@@ -90,6 +90,8 @@ export default function Library({ data }: { data: LibraryData }) {
           onChange={(e) => { const f = [...(e.target.files ?? [])]; if (f.length) up.add(f); e.target.value = ''; }} />
       </div>
 
+      {data.rescans > 0 && <RescanBanner count={data.rescans} />}
+
       {!data.storageReady && (
         <div className="banner">
           <span>One-time setup: let this site upload to your storage bucket.</span>
@@ -161,8 +163,8 @@ function PrintRow({ r, onSize }: { r: LibraryRow; onSize: (s: 'standard' | 'larg
     switch (r.status) {
       case 'processing': return <span className="st busy">Making web copies</span>;
       case 'ready': return <span className="st">Ready</span>;
-      case 'needs_attention': return <><span className="st bad">Needs a look</span><div className="sub">{r.issue}</div><Link className="link" href={`/admin/prints/${r.id}`} onClick={(e) => e.stopPropagation()}>Check scan</Link></>;
-      case 'duplicate': return <><span className="st draft">Duplicate</span><div className="sub">Same print as {r.duplicateOf ?? 'another'}</div></>;
+      case 'needs_attention': return <><span className="st bad">Needs a look</span><div className="sub">{r.issue}</div><Link className="link" href={`/admin/prints/${r.id}`} onClick={(e) => e.stopPropagation()}>Check scan</Link>{r.duplicateOf && <ReplaceLink r={r} />}</>;
+      case 'duplicate': return <><span className="st draft">{r.sharper ? 'Sharper rescan' : 'Duplicate'}</span><div className="sub">{r.issue ?? `Same print as ${r.duplicateOf ?? 'another'}`}</div>{r.duplicateOf && <ReplaceLink r={r} />}</>;
       default: return <><span className="st bad">Failed</span><div className="sub">{r.issue}</div></>;
     }
   })();
@@ -242,6 +244,35 @@ function BatchPanel({ items, up }: { items: Item[]; up: Uploader }) {
         {!finished && <button className="link" onClick={() => up.cancelPending()}>Cancel pending</button>}
         {finished && <button className="link" onClick={() => up.clearFinished()}>Close</button>}
       </div>
+    </div>
+  );
+}
+
+/** "Replace 069": this rescan takes over that print's spot, size and number. */
+function ReplaceLink({ r }: { r: LibraryRow }) {
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  return (
+    <button className="link" disabled={pending} style={{ marginLeft: 8 }}
+      title={`This scan takes ${r.duplicateOf}'s place on the wall: same spot, size and number. The old scan is kept off the wall.`}
+      onClick={(e) => { e.stopPropagation(); start(async () => { await replaceWithRescan(r.id); router.refresh(); }); }}>
+      {pending ? 'Replacing…' : r.issue?.startsWith('Replaced by') ? 'Swap back' : `Replace ${r.duplicateOf}`}
+    </button>
+  );
+}
+
+function RescanBanner({ count }: { count: number }) {
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  const [done, setDone] = useState<number | null>(null);
+  return (
+    <div className="banner">
+      <span>{done !== null ? `Replaced ${done} print${done === 1 ? '' : 's'} with the sharper rescans.` : `${count} rescan${count === 1 ? ' is' : 's are'} sharper than the print${count === 1 ? '' : 's'} on the wall. Each one can take its print's place: same spot, size and number.`}</span>
+      {done === null && (
+        <button className="btn dark" disabled={pending} onClick={() => start(async () => { const r = await replaceAllRescans(); setDone(r.replaced); router.refresh(); })}>
+          {pending ? 'Replacing…' : count === 1 ? 'Replace it' : `Replace all ${count}`}
+        </button>
+      )}
     </div>
   );
 }

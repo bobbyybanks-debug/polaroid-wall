@@ -6,7 +6,7 @@ import Link from 'next/link';
 import type { printDetail } from '@/lib/admin-data';
 import type { CropRect } from '@/lib/db/schema';
 import { fmtBytes } from '@/lib/limits';
-import { setCleanup, setSize, putOnWall, takeOffWall, removePrint, retryPrint } from '@/app/admin/actions';
+import { setCleanup, setSize, putOnWall, takeOffWall, removePrint, retryPrint, replaceWithRescan } from '@/app/admin/actions';
 
 type D = NonNullable<Awaited<ReturnType<typeof printDetail>>>;
 const fmtType = (mime: string) => (mime.includes('tiff') ? 'TIFF' : mime.includes('png') ? 'PNG' : 'JPEG');
@@ -126,6 +126,10 @@ export default function PrintDetail({ d }: { d: D }) {
               <button className={d.size !== 'large' ? 'on' : ''} disabled={pending || d.wall === 'off'} onClick={() => act(() => setSize(p.id, 'standard'))}>Standard</button>
               <button className={d.size === 'large' ? 'on' : ''} disabled={pending || d.wall === 'off'} onClick={() => act(() => setSize(p.id, 'large'))}>Large</button>
             </div>
+            {d.dupOf && (p.status === 'duplicate' || p.status === 'needs_attention') && (
+              <button className="btn dark" disabled={pending || processing} title={`This scan takes ${d.dupOf}'s place on the wall: same spot, size and number.`}
+                onClick={() => act(() => replaceWithRescan(p.id))}>Replace {d.dupOf} with this scan</button>
+            )}
             {d.wall === 'off'
               ? <button className="btn" disabled={pending || processing} onClick={() => act(() => putOnWall(p.id))}>{p.status === 'duplicate' ? 'Put on wall anyway' : 'Place on wall'}</button>
               : <span className="row"><Link className="btn" href={`/admin/wall?print=${p.id}`}>Open in wall editor</Link>{d.wall === 'unpublished' && <button className="link" onClick={() => act(() => takeOffWall(p.id))}>Take off</button>}</span>}

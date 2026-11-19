@@ -2,19 +2,23 @@ import 'server-only';
 import { and, desc, eq, gt, inArray, ne } from 'drizzle-orm';
 import { db, schema } from './db';
 import { env } from './env';
-import { draftVersion } from './placement/service';
+import { draftVersion, sharperRescans } from './placement/service';
 
 export type LibraryRow = {
   id: string; number: string; filename: string; originalId: string; mime: string; bytes: number;
   width: number | null; height: number | null; status: string; issue: string | null;
   thumb: string | null; wall: 'published' | 'unpublished' | 'off'; size: 'standard' | 'large' | null;
   duplicateOf: string | null; createdAt: string;
+  /** A rescan with clearly more pixels than the print it matches (can replace it). */
+  sharper: boolean;
 };
 export type UploadRow = { id: string; filename: string; bytes: number; status: string; error: string | null; updatedAt: string };
 export type LibraryData = {
   rows: LibraryRow[]; uploads: UploadRow[];
   stats: { prints: number; scans: number; originalBytes: number; lastPublished: string | null };
   storageReady: boolean;
+  /** How many sharper rescans are waiting to replace the prints they match. */
+  rescans: number;
 };
 
 const thumbUrl = (id: string, version: string | null, sizes: number[] | null) =>
@@ -30,6 +34,7 @@ export async function libraryData(): Promise<LibraryData> {
     .innerJoin(schema.originals, eq(schema.originals.id, schema.prints.originalId))
     .orderBy(desc(schema.prints.createdAt), desc(schema.prints.number));
   const numbers = new Map(rows.map(({ p }) => [p.id, p.number]));
+  const sharper = new Set((await sharperRescans()).map(([id]) => id));
   const out: LibraryRow[] = rows.map(({ p, o }) => ({
     id: p.id, number: p.number, filename: o.filename, originalId: o.id, mime: o.mime, bytes: o.bytes,
     width: o.width, height: o.height, status: p.status, issue: p.issue,
@@ -38,6 +43,7 @@ export async function libraryData(): Promise<LibraryData> {
     size: draft.get(p.id) ?? null,
     duplicateOf: p.duplicateOfId ? numbers.get(p.duplicateOfId) ?? null : null,
     createdAt: p.createdAt.toISOString(),
+    sharper: sharper.has(p.id),
   }));
   const since = new Date(Date.now() - 1000 * 60 * 60 * 24 * 3);
   const uploads = (await d.select().from(schema.uploads)
@@ -53,6 +59,7 @@ export async function libraryData(): Promise<LibraryData> {
       lastPublished: pub?.publishedAt?.toISOString() ?? null,
     },
     storageReady: !!setup,
+    rescans: sharper.size,
   };
 }
 

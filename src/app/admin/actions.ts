@@ -7,7 +7,7 @@ import { requireAdmin, supabaseServer } from '@/lib/auth';
 import { adminEmails, env } from '@/lib/env';
 import { db, schema } from '@/lib/db';
 import {
-  publish, rollbackTo, updatePlacement, removeFromWall, restack, resuggest, suggestPlacement, draftVersion, spread, makeRoom,
+  publish, rollbackTo, updatePlacement, removeFromWall, restack, resuggest, suggestPlacement, draftVersion, spread, makeRoom, replacePrint, sharperRescans,
   type PlacementPatch,
 } from '@/lib/placement/service';
 import { enqueue } from '@/lib/jobs';
@@ -82,6 +82,28 @@ export async function putOnWall(printId: string) {
   }
   await suggestPlacement(printId);
   revalidatePath('/admin');
+}
+
+/** Library / print detail: this rescan takes over the print it duplicates (spot, size, number). */
+export async function replaceWithRescan(printId: string) {
+  await requireAdmin();
+  const d = await db();
+  const [p] = await d.select({ dup: schema.prints.duplicateOfId }).from(schema.prints).where(eq(schema.prints.id, printId));
+  if (!p?.dup) return { error: 'This scan isn\'t matched to another print.' };
+  const r = await replacePrint(printId, p.dup);
+  updateTag('layout');
+  revalidatePath('/admin');
+  return r ? { ok: true, number: r.number } : { error: 'Couldn\'t replace that print.' };
+}
+
+/** Library banner: every sharper rescan takes over the print it matches. */
+export async function replaceAllRescans() {
+  await requireAdmin();
+  let n = 0;
+  for (const [rescan, old] of await sharperRescans()) if (await replacePrint(rescan, old)) n++;
+  updateTag('layout');
+  revalidatePath('/admin');
+  return { replaced: n };
 }
 
 /** Wall editor "Fix overlaps": nudge apart prints stacked on top of each other. Returns how many moved. */

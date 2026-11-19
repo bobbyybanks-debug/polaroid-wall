@@ -252,12 +252,15 @@ export async function processPrint(printId: string, opts: { copiesOnly?: boolean
 
   // 4. Near-duplicates: the signed version (more ink on the border) goes on the wall.
   let duplicateOfId: string | null = null;
-  const others = await d.select({ id: schema.prints.id, number: schema.prints.number, dhash: schema.prints.dhash, borderInk: schema.prints.borderInk, status: schema.prints.status })
+  const others = await d.select({ id: schema.prints.id, number: schema.prints.number, dhash: schema.prints.dhash, borderInk: schema.prints.borderInk, status: schema.prints.status, w: schema.prints.widthPx, h: schema.prints.heightPx })
     .from(schema.prints).where(and(ne(schema.prints.id, printId), isNotNull(schema.prints.dhash)));
   // Same photo scanned twice (signed / unsigned) differs by about 22–27 of 256 bits; different photos by 60+.
   const twin = others.find((o) => o.status !== 'duplicate' && o.status !== 'failed' && o.dhash!.length === dhash.length && hamming(o.dhash!, dhash) <= 40);
   if (twin) {
     const mineSigned = borderInk > (twin.borderInk ?? 0) + 0.004;
+    // A rescan at higher resolution can take the twin's place (Library: "Replace").
+    const sharper = !!twin.w && !!twin.h && cw * ch > twin.w * twin.h * 1.15;
+    const res = sharper ? ` at higher resolution (${cw} × ${ch} vs ${twin.w} × ${twin.h})` : '';
     if (mineSigned) {
       // This upload is the signed one: it replaces the twin unless the twin is already published.
       const published = await isPublished(twin.id);
@@ -266,12 +269,15 @@ export async function processPrint(printId: string, opts: { copiesOnly?: boolean
         await removeFromDraft(twin.id);
       } else if (!issue) {
         status = 'needs_attention';
-        issue = `Signed version of ${twin.number}, which is already on the wall. Swap them in the placement editor if you want this one up.`;
+        duplicateOfId = twin.id;
+        issue = `Signed version of ${twin.number}${res}, which is already on the wall. Use "Replace ${twin.number}" to swap it in.`;
       }
     } else {
       status = 'duplicate';
       duplicateOfId = twin.id;
-      issue = `Near-duplicate of ${twin.number}${(twin.borderInk ?? 0) > borderInk + 0.004 ? ', which is signed' : ''}. Kept off the wall; use "Put on wall" to override.`;
+      issue = sharper
+        ? `Rescan of ${twin.number}${res}. Use "Replace ${twin.number}" to swap it in.`
+        : `Near-duplicate of ${twin.number}${(twin.borderInk ?? 0) > borderInk + 0.004 ? ', which is signed' : ''}. Kept off the wall; use "Replace ${twin.number}" or "Put on wall" to override.`;
     }
   }
 
