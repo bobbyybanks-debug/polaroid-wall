@@ -124,8 +124,16 @@ html:has(.wall-root), html:has(.wall-root) body {
 .mono { font-family: var(--mono); font-size: 11px; letter-spacing: .02em; }
 .muted { color: var(--ink-muted); }
 
-.title { top: calc(22px + var(--sat)); left: calc(24px + var(--sal)); z-index: 40; }
-.title .name { font-weight: 500; }
+/* Title: no bubble; type matches the menu on Bobby's portfolio (Poppins, #111 bold / #444). */
+.title {
+  top: calc(24px + var(--sat)); left: calc(24px + var(--sal)); z-index: 40;
+  height: auto; padding: 0; border-radius: 0; gap: .45em;
+  background: none; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none;
+  font-family: var(--font-poppins), 'Poppins', sans-serif; font-size: 9.5px; line-height: 1.4; letter-spacing: .04em;
+  color: #444;
+}
+.title .name { font-weight: 700; color: #111; }
+.title .muted { color: #444; }
 
 .hint { left: calc(24px + var(--sal)); bottom: calc(22px + var(--sab)); color: var(--ink-muted); }
 .hint.gone { opacity: 0; pointer-events: none; }

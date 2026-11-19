@@ -17,6 +17,16 @@ const plex = localFont({
   display: 'swap',
 });
 
+// Poppins matches the menu on Bobby's portfolio (OFL, subset to Latin, see fonts/OFL-Poppins.txt).
+const poppins = localFont({
+  src: [
+    { path: './fonts/poppins-latin-400.woff', weight: '400', style: 'normal' },
+    { path: './fonts/poppins-latin-700.woff', weight: '700', style: 'normal' },
+  ],
+  variable: '--font-poppins',
+  display: 'swap',
+});
+
 export const metadata: Metadata = {
   title: 'Bobby Banks — Polaroids',
   description: 'An archive of Polaroids by Bobby Banks.',
@@ -32,7 +42,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: LayoutProps<'/'>) {
   return (
-    <html lang="en" className={`${inter.variable} ${plex.variable}`}>
+    <html lang="en" className={`${inter.variable} ${plex.variable} ${poppins.variable}`}>
       <body>{children}</body>
     </html>
   );
