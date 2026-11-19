@@ -496,10 +496,11 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     if (!V.open || !V.p) return;
     const p = V.p;
     let best: P | undefined, score = Infinity;
+    // Nearest print in a cone above/below; failing that, anything further up/down in that column.
     for (const q of prints) {
       const dy = (q.cy - p.cy) * dir, dx = Math.abs(q.cx - p.cx);
       if (q === p || dy < 40) continue;
-      const s = dy + dx * 2.5;
+      const s = dx <= dy * 1.2 ? dy + dx : 1e6 + dy + dx * 2.5;
       if (s < score) { score = s; best = q; }
     }
     if (!best) {
