@@ -133,7 +133,7 @@ html:has(.wall-root), html:has(.wall-root) body {
   color: #444;
 }
 .title { align-items: baseline; }
-.title .name { font-weight: 700; color: #111; font-size: 2em; letter-spacing: .04em; }
+.title .name { font-weight: 700; color: #111; font-size: 15px; letter-spacing: .04em; }
 .title .muted { color: #444; }
 
 .hint { left: calc(24px + var(--sal)); bottom: calc(22px + var(--sab)); color: var(--ink-muted); }
