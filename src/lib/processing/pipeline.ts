@@ -142,8 +142,31 @@ function iccName(icc: Buffer): string | null {
   return m ? m[1].replace(/[^\x20-\x7e]/g, '').trim() : 'Embedded profile';
 }
 
-/** Make web copies, fingerprint, de-duplicate and place one print. */
-export async function processPrint(printId: string): Promise<void> {
+/**
+ * Box of rows/columns that are (almost) fully opaque. PNG cut-outs have a soft transparent edge
+ * whose hidden colour is usually black; cropping to this box drops it.
+ */
+export async function opaqueBox(file: string) {
+  const { data, info } = await open(file).rotate().extractChannel('alpha').raw().toBuffer({ resolveWithObject: true });
+  const W = info.width, H = info.height;
+  const rowOk = (y: number) => { let n = 0; for (let x = 0; x < W; x++) if (data[y * W + x] >= 250) n++; return n >= W * 0.97; };
+  const colOk = (x: number, y0: number, y1: number) => { let n = 0; for (let y = y0; y <= y1; y++) if (data[y * W + x] >= 250) n++; return n >= (y1 - y0 + 1) * 0.97; };
+  let top = 0, bottom = H - 1;
+  while (top < bottom && !rowOk(top)) top++;
+  while (bottom > top && !rowOk(bottom)) bottom--;
+  let left = 0, right = W - 1;
+  while (left < right && !colOk(left, top, bottom)) left++;
+  while (right > left && !colOk(right, top, bottom)) right--;
+  const w = right - left + 1, h = bottom - top + 1;
+  // Only trust it if it keeps most of the image (a mostly transparent file is left alone).
+  return w * h >= W * H * 0.5 && (w < W || h < H) ? { left, top, width: w, height: h } : null;
+}
+
+/**
+ * Make web copies, fingerprint, de-duplicate and place one print.
+ * With { copiesOnly: true } it only rebuilds the web copies (status, duplicates and placement stay).
+ */
+export async function processPrint(printId: string, opts: { copiesOnly?: boolean } = {}): Promise<void> {
   const d = await db();
   const [print] = await d.select().from(schema.prints).where(eq(schema.prints.id, printId));
   if (!print) return;
@@ -152,11 +175,18 @@ export async function processPrint(printId: string): Promise<void> {
   const file = await localOriginal(orig.storageKey);
   const W = orig.width!, H = orig.height!;
   const rect = clean?.mode === 'trim' ? clean.rect : null;
+  const hasAlpha = !!(await open(file).metadata()).hasAlpha;
 
   // 1. Upright, trimmed, sRGB 8-bit working copy, at most 3200 px on the long edge.
+  //    Transparent areas become white (never black), and a soft transparent edge is cropped off.
   let work = open(file).rotate();
+  if (hasAlpha) work = work.flatten({ background: '#ffffff' });
   let cw = W, ch = H;
-  if (rect) {
+  const edge = hasAlpha && !rect ? await opaqueBox(file) : null;
+  if (edge) {
+    work = work.extract(edge);
+    cw = edge.width; ch = edge.height;
+  } else if (rect) {
     if (Math.abs(rect.angle) > 0.05) {
       // Materialise the rotation once so the crop maths stays exact.
       const rotated = await work.rotate(-rect.angle, { background: '#ffffff' }).raw().toBuffer({ resolveWithObject: true });
@@ -200,7 +230,7 @@ export async function processPrint(printId: string): Promise<void> {
 
   // 3. Web copies. Content-hashed folder so every version caches forever.
   const version = crypto.createHash('sha1')
-    .update(`${PIPELINE}|${orig.sha256}|${JSON.stringify(rect)}`).digest('hex').slice(0, 10);
+    .update(`${PIPELINE}|${orig.sha256}|${JSON.stringify(rect)}${hasAlpha ? '|alpha-white' : ''}`).digest('hex').slice(0, 10);
   const sizes = COPY_SIZES.filter((s) => s < longEdge);
   if (!sizes.length || sizes[sizes.length - 1] < Math.min(longEdge, 3200)) sizes.push(Math.min(longEdge, 3200));
   const rows: (typeof schema.copies.$inferInsert)[] = [];
@@ -224,6 +254,12 @@ export async function processPrint(printId: string): Promise<void> {
   await d.insert(schema.copies).values(rows);
   const keep = new Set(rows.map((r) => r.storageKey));
   await deleteCopies(old.map((o) => o.key).filter((k) => !keep.has(k)));
+
+  if (opts.copiesOnly) {
+    await d.update(schema.prints).set({ widthPx: cw, heightPx: ch, copyVersion: version, copySizes: sizes, updatedAt: new Date() })
+      .where(eq(schema.prints.id, printId));
+    return;
+  }
 
   const film = filmFromRatio(cw, ch);
   let status: 'ready' | 'needs_attention' | 'duplicate' = print.issue ? 'needs_attention' : 'ready';
