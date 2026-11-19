@@ -175,6 +175,33 @@ export async function publish(note?: string) {
   });
 }
 
+/**
+ * Auto-publish (on unless the 'autoPublish' setting is false): put one freshly placed print straight
+ * onto the live wall. It joins the current published version (no new version, so nothing else in
+ * the draft goes live with it) and is locked in the draft like any published print.
+ */
+export async function goLive(printId: string): Promise<boolean> {
+  const d = await db();
+  const [setting] = await d.select().from(schema.settings).where(eq(schema.settings.key, 'autoPublish'));
+  if (setting && setting.value === false) return false;
+  const vid = await draftVersion();
+  return placing(async (tx) => {
+    const [pub] = await tx.select().from(schema.layoutVersions).where(eq(schema.layoutVersions.status, 'published')).limit(1);
+    if (!pub) return false; // the very first publish stays a manual step
+    const [pl] = await tx.select().from(schema.placements).where(and(eq(schema.placements.versionId, vid), eq(schema.placements.printId, printId)));
+    if (!pl) return false;
+    const [already] = await tx.select({ id: schema.placements.id }).from(schema.placements)
+      .where(and(eq(schema.placements.versionId, pub.id), eq(schema.placements.printId, printId)));
+    if (already) return false;
+    const { id: _omit, ...row } = pl;
+    await tx.insert(schema.placements).values({ ...row, versionId: pub.id, locked: true });
+    await tx.update(schema.placements).set({ locked: true }).where(eq(schema.placements.id, pl.id));
+    // The opening view frames the whole live wall, so it grows with it.
+    await tx.update(schema.layoutVersions).set({ frame: frameAround(await placedWithBoxes(pub.id, tx)) }).where(eq(schema.layoutVersions.id, pub.id));
+    return true;
+  });
+}
+
 const FRAME_MARGIN = 120;
 function frameAround(boxes: Placed[]) {
   const b = boxes.reduce((r, p) => ({

@@ -19,7 +19,8 @@ import { downloadOriginal, putCopy, copyKey, deleteCopies } from '../storage';
 import { LIMITS } from '../limits';
 import { detectAndPlan, filmFromRatio } from './detect';
 import { autoFitRect } from './autofit';
-import { suggestPlacement } from '../placement/service';
+import { goLive, suggestPlacement } from '../placement/service';
+import { revalidateTag } from 'next/cache';
 
 sharp.cache(false);
 sharp.concurrency(Math.max(1, Math.min(4, os.cpus().length)));
@@ -280,6 +281,10 @@ export async function processPrint(printId: string, opts: { copiesOnly?: boolean
   }).where(eq(schema.prints.id, printId));
 
   if (status === 'ready' || status === 'needs_attention') await suggestPlacement(printId);
+  // New uploads go live on their own. Prints that need a look stay in the draft for review.
+  if (status === 'ready' && await goLive(printId)) {
+    try { revalidateTag('layout', { expire: 0 }); } catch { /* outside a Next request (scripts) */ }
+  }
 }
 
 async function isPublished(printId: string) {
