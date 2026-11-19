@@ -98,7 +98,12 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
   const bounds = prints.length ? prints.reduce((r, p) => ({
     minX: Math.min(r.minX, p.minX), maxX: Math.max(r.maxX, p.maxX), minY: Math.min(r.minY, p.minY), maxY: Math.max(r.maxY, p.maxY),
   }), { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }) : { minX: frame.x, maxX: frame.x + frame.w, minY: frame.y, maxY: frame.y + frame.h };
-  const canvas = canvasAround(prints, bounds);
+  // Trimmed to the pile, then given back 20% each way (Bobby, Nov 19: the tight canvas was too tight).
+  const CANVAS_GROW = 1.2;
+  const canvas = (() => {
+    const c = canvasAround(prints, bounds), w = c.w * CANVAS_GROW, h = c.h * CANVAS_GROW;
+    return { x: c.x - (w - c.w) / 2, y: c.y - (h - c.h) / 2, w, h };
+  })();
 
   // Reading order for ← →: rows by height on the wall, then left to right.
   const seq = (() => {
