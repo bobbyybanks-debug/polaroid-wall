@@ -119,8 +119,10 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
   {
     const mx = canvas.x + canvas.w / 2, my = canvas.y + canvas.h / 2, far = Math.hypot(canvas.w, canvas.h) / 2;
     for (const p of prints) (p.el.firstChild as HTMLElement).style.setProperty('--d', Math.round(Math.min(1, Math.hypot(p.cx - mx, p.cy - my) / far) * 520) + 'ms');
-    world.classList.add('entering');
-    setTimeout(() => world.classList.remove('entering'), 1300);
+    if (!coarse.matches && !isNarrow()) {
+      world.classList.add('entering');
+      setTimeout(() => world.classList.remove('entering'), 1300);
+    }
   }
 
   // Reading order for ← →: rows by height on the wall, then left to right.
