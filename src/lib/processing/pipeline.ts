@@ -16,6 +16,7 @@ import { createReadStream } from 'node:fs';
 import { and, eq, ne, inArray, isNotNull } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { downloadOriginal, putCopy, copyKey, deleteCopies } from '../storage';
+import { PLACEHOLDER_PX } from './placeholder';
 import { LIMITS } from '../limits';
 import { detectAndPlan, filmFromRatio } from './detect';
 import { autoFitRect } from './autofit';
@@ -234,6 +235,10 @@ export async function processPrint(printId: string, opts: { copiesOnly?: boolean
     }
   }
 
+  // Tiny preview the wall shows (blurred) until the real copy has loaded.
+  const ph = await fromBase().resize({ width: bw >= bh ? PLACEHOLDER_PX : undefined, height: bh > bw ? PLACEHOLDER_PX : undefined }).webp({ quality: 50 }).toBuffer();
+  const placeholder = `data:image/webp;base64,${ph.toString('base64')}`;
+
   const old = await d.select({ key: schema.copies.storageKey }).from(schema.copies).where(eq(schema.copies.printId, printId));
   await d.delete(schema.copies).where(eq(schema.copies.printId, printId));
   await d.insert(schema.copies).values(rows);
@@ -241,7 +246,7 @@ export async function processPrint(printId: string, opts: { copiesOnly?: boolean
   await deleteCopies(old.map((o) => o.key).filter((k) => !keep.has(k)));
 
   if (opts.copiesOnly) {
-    await d.update(schema.prints).set({ widthPx: cw, heightPx: ch, copyVersion: version, copySizes: sizes, updatedAt: new Date() })
+    await d.update(schema.prints).set({ widthPx: cw, heightPx: ch, copyVersion: version, copySizes: sizes, placeholder, updatedAt: new Date() })
       .where(eq(schema.prints.id, printId));
     return;
   }
@@ -284,7 +289,7 @@ export async function processPrint(printId: string, opts: { copiesOnly?: boolean
 
   await d.update(schema.prints).set({
     status, issue, film, widthPx: cw, heightPx: ch, dhash, borderInk, duplicateOfId,
-    copyVersion: version, copySizes: sizes, updatedAt: new Date(),
+    copyVersion: version, copySizes: sizes, placeholder, updatedAt: new Date(),
   }).where(eq(schema.prints.id, printId));
 
   if (status === 'ready' || status === 'needs_attention') await suggestPlacement(printId);

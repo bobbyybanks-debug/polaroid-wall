@@ -78,12 +78,22 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     el.setAttribute('aria-label', 'Print ' + wp.n);
     el.dataset.i = String(i);
     const face = document.createElement('span');
-    face.className = 'face';
+    // Until the copy loads: its tiny blurred preview (or a plain skeleton) with a sheen.
+    face.className = 'face loading' + (wp.ph ? '' : ' skeleton');
+    if (wp.ph) face.style.setProperty('--ph', `url("${wp.ph}")`);
     const img = document.createElement('img');
     img.alt = '';
     img.decoding = 'async';
     img.draggable = false;
+    const loaded = () => {
+      if (!face.classList.contains('loading')) return;
+      face.classList.remove('loading', 'skeleton');
+      face.classList.add('fading');
+      setTimeout(() => face.classList.remove('fading'), 450);
+    };
+    img.addEventListener('load', loaded);
     img.src = srcFor(wp, wp.sizes[0]);
+    if (img.complete && img.naturalWidth) loaded();
     face.appendChild(img);
     el.appendChild(face);
     frag.appendChild(el);
@@ -104,6 +114,14 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     const c = canvasAround(prints, bounds), w = c.w * CANVAS_GROW, h = c.h * CANVAS_GROW;
     return { x: c.x - (w - c.w) / 2, y: c.y - (h - c.h) / 2, w, h };
   })();
+
+  // Opening: prints settle in from the middle outwards (once; culling would replay it).
+  {
+    const mx = canvas.x + canvas.w / 2, my = canvas.y + canvas.h / 2, far = Math.hypot(canvas.w, canvas.h) / 2;
+    for (const p of prints) (p.el.firstChild as HTMLElement).style.setProperty('--d', Math.round(Math.min(1, Math.hypot(p.cx - mx, p.cy - my) / far) * 520) + 'ms');
+    world.classList.add('entering');
+    setTimeout(() => world.classList.remove('entering'), 1300);
+  }
 
   // Reading order for ← →: rows by height on the wall, then left to right.
   const seq = (() => {
@@ -428,6 +446,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     V.open = true; V.p = p; V.lastFocus = p.el;
     body.classList.add('viewing');
     viewer.hidden = false;
+    vimg.style.backgroundImage = p.ph ? `url("${p.ph}")` : '';
     vimg.src = p.img.src;
     vimg.alt = 'Print ' + p.n;
     setFit(p);
@@ -478,6 +497,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     p.el.classList.remove('away');
     q.el.classList.add('away');
     V.p = q; V.lastFocus = q.el;
+    vimg.style.backgroundImage = q.ph ? `url("${q.ph}")` : '';
     vimg.src = q.img.src;
     vimg.alt = 'Print ' + q.n;
     setFit(q);

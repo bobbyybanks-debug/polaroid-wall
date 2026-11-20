@@ -331,6 +331,8 @@ export type WallPrint = {
   src: string; sizes: number[];
   /** Pixel size of the largest copy (viewer 1:1 limit). */
   iw: number; ih: number;
+  /** Tiny blurred preview (data: URL) shown until the copy loads. */
+  ph?: string;
   status?: string; locked?: boolean; source?: string; draft?: boolean;
 };
 export type WallLayout = { version: number; frame: { x: number; y: number; w: number; h: number }; prints: WallPrint[] };
@@ -342,6 +344,8 @@ async function layoutFor(versionId: number, withEditorFields: boolean, livePrint
     .innerJoin(schema.prints, eq(schema.prints.id, schema.placements.printId))
     .where(eq(schema.placements.versionId, versionId));
   const base = env().PUBLIC_IMAGE_BASE;
+  const { fillPlaceholders } = await import('../processing/placeholder');
+  const filled = await fillPlaceholders(rows.map(({ pr }) => pr));
   const prints = rows
     .filter(({ pr }) => withEditorFields || pr.copyVersion)
     .sort((a, b) => a.pl.layer - b.pl.layer)
@@ -356,6 +360,8 @@ async function layoutFor(versionId: number, withEditorFields: boolean, livePrint
         r: pl.rotation, L: pl.size === 'large', z: pl.layer,
         src: pr.copyVersion ? `${base}/p/${pr.id}/${pr.copyVersion}` : '', sizes, iw, ih,
       };
+      const ph = pr.placeholder ?? filled.get(pr.id);
+      if (ph) wp.ph = ph;
       if (withEditorFields) Object.assign(wp, { status: pr.status, locked: pl.locked, source: pl.source, draft: livePrintIds ? !livePrintIds.has(pr.id) : false });
       return wp;
     });

@@ -67,6 +67,8 @@ export const prints = pgTable('prints', {
   copyVersion: text('copy_version'),
   /** Long-edge pixel sizes available for this print's web copies. */
   copySizes: jsonb('copy_sizes').$type<number[]>(),
+  /** Tiny blurred preview (data: URL, ~20 px) shown on the wall until the real copy loads. */
+  placeholder: text('placeholder'),
   createdAt: created(),
   updatedAt: updated(),
 }).enableRLS();

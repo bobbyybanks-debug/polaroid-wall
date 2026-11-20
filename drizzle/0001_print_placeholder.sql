@@ -1,0 +1,1 @@
+ALTER TABLE "prints" ADD COLUMN "placeholder" text;
