@@ -31,7 +31,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
   const isNarrow = () => innerWidth < 700;
   const easeOut = (k: number) => 1 - Math.pow(1 - k, 3);
   const easeInOut = (k: number) => (k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
-  const MAX_Z = 2, OPEN_Z = .62;
+  const MAX_Z = 2, OPEN_Z = .41;
   const frame = layout.frame;
   const cleanups: (() => void)[] = [];
   const on = <K extends keyof WindowEventMap>(t: EventTarget, type: K | string, fn: (e: never) => void, o?: AddEventListenerOptions) => {
@@ -148,8 +148,8 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     return Math.max(innerWidth / canvas.w, innerHeight / canvas.h);
   }
   function initialZ() {
-    // Desktop opens close in (about 62%, the view Bobby picked on Nov 18). Phones open as far out
-    // as the canvas allows.
+    // Desktop opens at about 41%, the view Bobby picked on Nov 19 (whole pile, packed edge to edge).
+    // Phones open as far out as the canvas allows.
     return Math.min(1.2, isNarrow() ? coverZ() : Math.max(OPEN_Z, coverZ()));
   }
   function initialView() {
