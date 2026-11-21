@@ -23,7 +23,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
   const viewer = $('#viewer'), veil = $('#veil'), vstage = $('#vstage');
   /** The print at rest in the viewer. After a slide, the layer that arrived takes over this role. */
   let vimg = $<HTMLImageElement>('#vimg');
-  const vclose = $('#vclose'), vprev = $('#vprev'), vnext = $('#vnext');
+  const vclose = $('#vclose'), vprev = $('#vprev'), vnext = $('#vnext'), vup = $('#vup'), vdown = $('#vdown');
   const printPath = opts.printPath ?? ((n: string) => `/p/${encodeURIComponent(n)}`);
   const homePath = opts.homePath ?? '/';
 
@@ -736,6 +736,8 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
   on(vclose, 'click', () => closeViewer());
   on(vprev, 'click', () => go(-1));
   on(vnext, 'click', () => go(1));
+  on(vup, 'click', () => goVertical(-1));
+  on(vdown, 'click', () => goVertical(1));
   on(vstage, 'wheel', (e: WheelEvent) => {
     e.preventDefault();
     if (!V.open || V.anim || S.active) return;
@@ -877,7 +879,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
       else if (e.key === '+' || e.key === '=') zoomViewerAt(V.s * 1.25, innerWidth / 2, innerHeight / 2, 200);
       else if (e.key === '-') zoomViewerAt(V.s / 1.25, innerWidth / 2, innerHeight / 2, 200);
       else if (e.key === 'Tab') {
-        const f = [vclose, vprev, vnext];
+        const f = [vclose, vup, vprev, vnext, vdown];
         const i = f.indexOf(document.activeElement as El);
         e.preventDefault();
         f[(i + (e.shiftKey ? -1 : 1) + f.length) % f.length].focus();
