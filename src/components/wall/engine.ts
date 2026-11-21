@@ -940,7 +940,67 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     setTimeout(() => openViewer(start, { fromUrl: true }), 250);
   }
 
+  /* ---------------- First-visit hint ----------------
+     Once per visitor (add ?hint to the URL to see it again): a small chip names the gestures
+     while the wall shows them. It glides a few pixels and back, then breathes in and out, and
+     ends exactly where it started. Any touch, scroll or key stops it at once. */
+  const HINT_KEY = 'polaroids:hinted';
+  const hintTimers: number[] = [];
+  let hintChip: HTMLElement | null = null, hintStop: (() => void) | null = null;
+  /** A camera move out and back (zero speed at both ends), never past the canvas edge. */
+  function bump(kind: 'pan' | 'zoom', dur: number) {
+    stopMotion();
+    const b = { z, tx, ty }, cx = innerWidth / 2, cy = innerHeight / 2;
+    // Pan towards whichever side has room (the canvas edge may be close on big screens).
+    const loX = innerWidth - (canvas.x + canvas.w) * z, hiX = -canvas.x * z;
+    const loY = innerHeight - (canvas.y + canvas.h) * z, hiY = -canvas.y * z;
+    const ax = tx - loX >= hiX - tx ? -Math.min(56, tx - loX) : Math.min(56, hiX - tx);
+    const ay = ty - loY >= hiY - ty ? -Math.min(28, ty - loY) : Math.min(28, hiY - ty);
+    camAnim = tween(dur, (k) => {
+      const s = .5 - .5 * Math.cos(2 * Math.PI * k);
+      if (kind === 'pan') { tx = b.tx + ax * s; ty = b.ty + ay * s; }
+      else { z = b.z * (1 + .06 * s); tx = cx - (cx - b.tx) * (z / b.z); ty = cy - (cy - b.ty) * (z / b.z); }
+      apply(); markMoving();
+    }, () => { camAnim = null; ({ z, tx, ty } = b); apply(); }, (k) => k);
+  }
+  function introHint() {
+    if (V.open) return;
+    let replay = false;
+    try { replay = new URLSearchParams(location.search).has('hint'); if (!replay && localStorage.getItem(HINT_KEY)) return; } catch { /* storage blocked: show it */ }
+    const chip = hintChip = document.createElement('div');
+    chip.className = 'ghint';
+    chip.setAttribute('aria-hidden', 'true');
+    chip.innerHTML = `<span class="ghint-pad"><i></i><i></i></span><span>${coarse.matches ? 'Drag' : 'Scroll'} to explore · Pinch to zoom</span>`;
+    body.appendChild(chip);
+    let done = false;
+    const inputs = ['pointerdown', 'wheel', 'keydown', 'touchstart', 'gesturestart'];
+    const finish = () => {
+      if (done) return;
+      done = true;
+      hintTimers.forEach(clearTimeout);
+      for (const t of inputs) window.removeEventListener(t, abort, true);
+      chip.classList.remove('in');
+      chip.classList.add('out');
+      hintTimers.push(window.setTimeout(() => chip.remove(), 400));
+      try { localStorage.setItem(HINT_KEY, '1'); } catch { /* ignore */ }
+    };
+    // The visitor has it: stop the demo where it is and get out of the way.
+    const abort = () => { stopMotion(); finish(); };
+    hintStop = abort;
+    for (const t of inputs) window.addEventListener(t, abort, { capture: true, passive: true });
+    requestAnimationFrame(() => requestAnimationFrame(() => chip.classList.add('in', 'play')));
+    if (!reduceMotion.matches) {
+      hintTimers.push(window.setTimeout(() => bump('pan', 900), 150));
+      hintTimers.push(window.setTimeout(() => bump('zoom', 800), 1150));
+    }
+    hintTimers.push(window.setTimeout(finish, 2300));
+  }
+  if (!start) hintTimers.push(window.setTimeout(introHint, coarse.matches || isNarrow() ? 700 : 1150));
+
   return () => {
+    hintStop?.();
+    hintTimers.forEach(clearTimeout);
+    hintChip?.remove();
     stopMotion();
     for (const c of cleanups) c();
     clearTimeout(movingTimer); clearTimeout(tierTimer);
