@@ -250,25 +250,28 @@ html:has(.wall-root), html:has(.wall-root) body {
 }
 .ibtn:hover { background: rgba(250, 249, 245, .97); }
 .ibtn:focus-visible { outline: 1.5px solid var(--ink); outline-offset: 2px; }
-.ibtn.side { width: 44px; height: 44px; top: 50%; margin-top: -22px; }
+.ibtn.side { width: 32px; height: 32px; top: 50%; margin-top: -16px; }
+/* Arrows: small to look at, with a bigger invisible area to hit. */
+.ibtn.side svg, .ibtn.vert svg { width: 13px; height: 13px; }
+.ibtn.side::after, .ibtn.vert::after { content: ''; position: absolute; inset: -8px; border-radius: 50%; }
 .close { top: calc(20.5px + var(--sat)); right: calc(24px + var(--sar)); }
 .prev { left: calc(24px + var(--sal)); }
 .next { right: calc(24px + var(--sar)); }
 /* Up / down: centred above and below the print. */
-.ibtn.vert { width: 44px; height: 44px; left: 50%; margin-left: -22px; }
-.up { top: calc(20px + var(--sat)); }
-.down { bottom: calc(20px + var(--sab)); }
+.ibtn.vert { width: 32px; height: 32px; left: 50%; margin-left: -16px; }
+.up { top: calc(22px + var(--sat)); }
+.down { bottom: calc(22px + var(--sab)); }
 .vhint { position: absolute; z-index: 2; opacity: 0; }
 #viewer.open .ibtn, #viewer.open .vhint { opacity: 1; }
 
 .is-narrow .close { width: 44px; height: 44px; top: max(16px, calc(var(--sat) + 4px)); right: calc(16px + var(--sar)); }
-.is-narrow .ibtn.side { top: auto; margin-top: 0; bottom: max(16px, calc(var(--sab) - 2px)); }
+.is-narrow .ibtn.side { width: 36px; height: 36px; top: auto; margin-top: 0; bottom: max(20px, calc(var(--sab) + 2px)); }
 .is-narrow .prev { left: calc(16px + var(--sal)); }
 .is-narrow .next { right: calc(16px + var(--sar)); }
 /* Phone: all four arrows along the bottom, up/down in the middle pair. */
-.is-narrow .ibtn.vert { top: auto; bottom: max(16px, calc(var(--sab) - 2px)); }
-.is-narrow .up { margin-left: -50px; }
-.is-narrow .down { margin-left: 6px; }
+.is-narrow .ibtn.vert { width: 36px; height: 36px; top: auto; bottom: max(20px, calc(var(--sab) + 2px)); }
+.is-narrow .up { margin-left: -44px; }
+.is-narrow .down { margin-left: 8px; }
 .is-narrow .vhint { left: 50%; transform: translateX(-50%); bottom: calc(max(16px, calc(var(--sab) - 2px)) + 5.5px); }
 
 @media (prefers-reduced-motion: reduce) {
