@@ -947,19 +947,23 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
   const HINT_KEY = 'polaroids:hinted';
   const hintTimers: number[] = [];
   let hintChip: HTMLElement | null = null, hintStop: (() => void) | null = null;
-  /** A camera move out and back (zero speed at both ends), never past the canvas edge. */
-  function bump(kind: 'pan' | 'zoom', dur: number) {
+  /** The demo move, as one tween so it always lands exactly where it began: a glide out and back
+   *  (0–0.9 s), then a breath in and out (1.0–1.8 s). Zero speed at every turn; the glide heads
+   *  for whichever side has room, so it never shows past the canvas edge. */
+  function demoMove() {
     stopMotion();
     const b = { z, tx, ty }, cx = innerWidth / 2, cy = innerHeight / 2;
-    // Pan towards whichever side has room (the canvas edge may be close on big screens).
     const loX = innerWidth - (canvas.x + canvas.w) * z, hiX = -canvas.x * z;
     const loY = innerHeight - (canvas.y + canvas.h) * z, hiY = -canvas.y * z;
     const ax = tx - loX >= hiX - tx ? -Math.min(56, tx - loX) : Math.min(56, hiX - tx);
     const ay = ty - loY >= hiY - ty ? -Math.min(28, ty - loY) : Math.min(28, hiY - ty);
-    camAnim = tween(dur, (k) => {
-      const s = .5 - .5 * Math.cos(2 * Math.PI * k);
-      if (kind === 'pan') { tx = b.tx + ax * s; ty = b.ty + ay * s; }
-      else { z = b.z * (1 + .06 * s); tx = cx - (cx - b.tx) * (z / b.z); ty = cy - (cy - b.ty) * (z / b.z); }
+    const bumpAt = (t: number, t0: number, t1: number) => (t <= t0 || t >= t1 ? 0 : .5 - .5 * Math.cos(2 * Math.PI * (t - t0) / (t1 - t0)));
+    const DUR = 1800;
+    camAnim = tween(DUR, (k) => {
+      const t = k * DUR, g = bumpAt(t, 0, 900), br = bumpAt(t, 1000, 1800);
+      z = b.z * (1 + .06 * br);
+      const zt = b.tx + ax * g, zty = b.ty + ay * g;
+      tx = cx - (cx - zt) * (z / b.z); ty = cy - (cy - zty) * (z / b.z);
       apply(); markMoving();
     }, () => { camAnim = null; ({ z, tx, ty } = b); apply(); }, (k) => k);
   }
@@ -989,10 +993,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     hintStop = abort;
     for (const t of inputs) window.addEventListener(t, abort, { capture: true, passive: true });
     requestAnimationFrame(() => requestAnimationFrame(() => chip.classList.add('in', 'play')));
-    if (!reduceMotion.matches) {
-      hintTimers.push(window.setTimeout(() => bump('pan', 900), 150));
-      hintTimers.push(window.setTimeout(() => bump('zoom', 800), 1150));
-    }
+    if (!reduceMotion.matches) hintTimers.push(window.setTimeout(demoMove, 150));
     hintTimers.push(window.setTimeout(finish, 2300));
   }
   if (!start) hintTimers.push(window.setTimeout(introHint, coarse.matches || isNarrow() ? 700 : 1150));
