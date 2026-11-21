@@ -9,7 +9,7 @@
 
   /* Shadow styles (warm-tinted rgb 41/31/20) */
   --sh-rest: 0 .5px 1px rgba(41,31,20,.22), 0 2px 4px rgba(41,31,20,.10), 0 8px 16px rgba(41,31,20,.06);
-  --sh-lift: 0 1px 2px rgba(41,31,20,.14), 0 6px 12px rgba(41,31,20,.13), 0 18px 32px rgba(41,31,20,.09);
+  --sh-lift: 0 2px 3px rgba(41,31,20,.13), 0 9px 16px rgba(41,31,20,.12), 0 24px 42px rgba(41,31,20,.09);
   --sh-press: 0 .5px .75px rgba(41,31,20,.26), 0 1px 2px rgba(41,31,20,.12);
   --sh-view: 0 1px 2px rgba(41,31,20,.16), 0 12px 28px rgba(41,31,20,.14), 0 44px 90px rgba(41,31,20,.12);
 
@@ -77,7 +77,7 @@ html:has(.wall-root), html:has(.wall-root) body {
   overflow: hidden;
   background: #E6E2DA;
   box-shadow: var(--sh-rest);
-  transition: transform 180ms ease-out, box-shadow 180ms ease-out;
+  transition: transform 220ms cubic-bezier(.2,.7,.3,1), box-shadow 220ms cubic-bezier(.2,.7,.3,1);
 }
 .print img {
   position: relative;
@@ -88,10 +88,10 @@ html:has(.wall-root), html:has(.wall-root) body {
   -webkit-user-drag: none;
 }
 @media (hover: hover) and (pointer: fine) {
-  #stage:not(.dragging) .print:hover .face { transform: translateY(-3px); box-shadow: var(--sh-lift); }
+  #stage:not(.dragging) .print:hover .face { transform: translateY(-6px); box-shadow: var(--sh-lift); }
 }
 #stage .print.pressed .face { transform: none; box-shadow: var(--sh-press); transition-duration: 80ms; }
-.print:focus-visible .face { box-shadow: var(--sh-lift), 0 0 0 2px var(--wall), 0 0 0 3.5px var(--ink); }
+#stage:not(.dragging) .print:focus-visible .face { transform: translateY(-6px); box-shadow: var(--sh-lift), 0 0 0 2px var(--wall), 0 0 0 3.5px var(--ink); }
 .print.away { visibility: hidden; }
 
 /* Loading: the print's tiny preview, scaled up (soft on its own: no filters, which are heavy on
@@ -210,22 +210,26 @@ html:has(.wall-root), html:has(.wall-root) body {
 .vstage { position: absolute; inset: 0; overflow: hidden; touch-action: none; cursor: zoom-out; }
 .vstage.zoomed { cursor: grab; }
 .vstage.panning { cursor: grabbing; }
-#vimg {
+/* Prints in the viewer: the one at rest (#vimg) and, during a slide, the ones travelling with it.
+   They keep their shadow the whole way, so they stay on the table. */
+.vprint {
   position: absolute;
   left: 0; top: 0;
   transform-origin: 50% 50%;
   border-radius: 2px;
   box-shadow: var(--sh-view);
   background: #E6E2DA;
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
   user-select: none;
   -webkit-user-drag: none;
   -webkit-touch-callout: none;
-  cursor: zoom-in;
-  background-size: 100% 100%;
-  background-repeat: no-repeat;
 }
+.vprint:not(#vimg) { pointer-events: none; }
+.vprint[hidden] { display: none; }
+#vimg { cursor: zoom-in; }
+.vstage.sliding .vprint { will-change: transform; }
 .vstage.zoomed #vimg { cursor: inherit; }
-.ghost { position: absolute; left: 0; top: 0; transform-origin: 50% 50%; border-radius: 2px; box-shadow: var(--sh-view); pointer-events: none; }
 
 .ibtn {
   position: absolute;

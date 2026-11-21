@@ -37,7 +37,7 @@ export default function Wall({ layout, openNumber }: { layout: WallLayout; openN
         <div className="veil" id="veil" />
         <div className="vstage" id="vstage">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img id="vimg" alt="" draggable={false} />
+          <img id="vimg" className="vprint" alt="" draggable={false} />
         </div>
         <button className="ibtn close" id="vclose" type="button" aria-label="Close"><Close /></button>
         <button className="ibtn side prev" id="vprev" type="button" aria-label="Previous print"><Chevron dir="prev" /></button>

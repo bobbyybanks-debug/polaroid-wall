@@ -20,7 +20,9 @@ export type WallOptions = {
 export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) {
   const $ = <T extends El = El>(sel: string) => root.querySelector(sel) as T;
   const stage = $('#stage'), world = $('#world'), body = root;
-  const viewer = $('#viewer'), veil = $('#veil'), vstage = $('#vstage'), vimg = $<HTMLImageElement>('#vimg');
+  const viewer = $('#viewer'), veil = $('#veil'), vstage = $('#vstage');
+  /** The print at rest in the viewer. After a slide, the layer that arrived takes over this role. */
+  let vimg = $<HTMLImageElement>('#vimg');
   const vclose = $('#vclose'), vprev = $('#vprev'), vnext = $('#vnext');
   const printPath = opts.printPath ?? ((n: string) => `/p/${encodeURIComponent(n)}`);
   const homePath = opts.homePath ?? '/';
@@ -31,6 +33,22 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
   const isNarrow = () => innerWidth < 700;
   const easeOut = (k: number) => 1 - Math.pow(1 - k, 3);
   const easeInOut = (k: number) => (k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
+  /** CSS-style cubic-bezier easing (x solved by Newton, then bisection). */
+  const cubicBezier = (x1: number, y1: number, x2: number, y2: number) => {
+    const bz = (t: number, a: number, b: number) => 3 * a * t * (1 - t) ** 2 + 3 * b * t * t * (1 - t) + t ** 3;
+    const dbz = (t: number, a: number, b: number) => 3 * a * (1 - t) ** 2 + 6 * (b - a) * t * (1 - t) + 3 * (1 - b) * t * t;
+    return (x: number) => {
+      if (x <= 0) return 0;
+      if (x >= 1) return 1;
+      let t = x;
+      for (let i = 0; i < 6; i++) { const d = dbz(t, x1, x2); if (Math.abs(d) < 1e-6) break; t -= (bz(t, x1, x2) - x) / d; }
+      if (t < 0 || t > 1 || Math.abs(bz(t, x1, x2) - x) > 1e-4) {
+        let lo = 0, hi = 1; t = x;
+        for (let i = 0; i < 30; i++) { if (bz(t, x1, x2) < x) lo = t; else hi = t; t = (lo + hi) / 2; }
+      }
+      return bz(t, y1, y2);
+    };
+  };
   const MAX_Z = 2, OPEN_Z = .41;
   const frame = layout.frame;
   const cleanups: (() => void)[] = [];
@@ -378,7 +396,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     e.preventDefault();
     if (!gesture) return;
     const x = e.clientX || innerWidth / 2, y = e.clientY || innerHeight / 2;
-    if (V.open) { if (!V.anim) zoomViewerAt(gesture.s0 * e.scale, x, y); }
+    if (V.open) { if (!V.anim && !S.active) zoomViewerAt(gesture.s0 * e.scale, x, y); }
     else zoomAt(gesture.z0 * e.scale, x, y);
   });
   on(document, 'gestureend', (e: GestureLike) => { e.preventDefault(); gesture = null; });
@@ -458,12 +476,14 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     requestAnimationFrame(() => viewer.classList.add('open'));
     animatePose(restPose(), o.instant ? 0 : 320, easeOut);
     loadFull(p);
+    preloadAround(p);
     if (!o.fromUrl) setUrl(p);
     viewer.focus({ preventScroll: true });
   }
 
   function closeViewer(fromHistory = false) {
     if (!V.open || !V.p) return;
+    settleSlide();
     const p = V.p;
     V.open = false;
     viewer.classList.remove('open');
@@ -482,41 +502,198 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     document.title = 'Bobby Banks — Polaroids';
   }
 
-  function switchTo(q: P | undefined, dir: number, axis: 'x' | 'y' = 'x') {
+  /* ---------------- Sliding between prints ----------------
+     Next / Previous slide the prints across the table: the one in view and the one arriving
+     travel together, a constant gap apart, until the old one is off screen and the new one
+     rests in the middle. Only transforms change. Prints sit on a "strip": item v (an integer)
+     is a print, X(v) is its centre along the strip, and `pos` is the strip point at the centre
+     of the screen. A new Next/Prev mid-slide just moves the target, so motion carries on from
+     where it is. */
+  const SLIDE_MS = 450, SLIDE_GAP = 56, SLIDE_MARGIN = 28;
+  const slideEase = cubicBezier(.22, .8, .26, 1), SLIDE_E0 = .8 / .22; // friction ease-out; its starting slope
+  type Rect = { x: number; y: number; w: number; h: number };
+  type Pose = { cx: number; cy: number; s: number; angle: number };
+  type Layer = { el: HTMLImageElement; p: P; fit: Rect; pose: Pose | null };
+  const S = {
+    active: false, axis: 'x' as 'x' | 'y',
+    items: new Map<number, P>(), X: new Map<number, number>(), layers: new Map<number, Layer>(),
+    pos: 0, target: 0, from: 0, to: 0, dur: 0, t0: 0, raf: 0, vel: 0, lastT: 0, lastPos: 0,
+  };
+  const pool: HTMLImageElement[] = [];
+  const along = (r: Rect) => (S.axis === 'x' ? r.w : r.h);
+  const viewAlong = () => (S.axis === 'x' ? innerWidth : innerHeight);
+
+  // Neighbours are fetched at screen size ahead of time, so an arriving print is never empty.
+  const ready = new Map<P, string>(), pending = new Map<P, HTMLImageElement>();
+  function preload(p: P | undefined) {
+    if (!p || ready.has(p) || pending.has(p) || !p.sizes.length) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2), need = Math.max(fitRect(p).w, fitRect(p).h) * dpr;
+    const size = p.sizes.find((x) => x >= need) ?? p.sizes[p.sizes.length - 1];
+    const im = new Image();
+    im.src = srcFor(p, size, avif ? 'avif' : 'webp');
+    pending.set(p, im);
+    im.decode().then(() => {
+      ready.set(p, im.src);
+      if (ready.size > 8) ready.delete(ready.keys().next().value as P); // keep memory small on phones
+    }, () => {}).finally(() => pending.delete(p));
+  }
+  function preloadAround(p: P) {
+    const i = seqIndex.get(p)!;
+    preload(seq[(i + 1) % seq.length]); preload(seq[(i - 1 + seq.length) % seq.length]);
+  }
+
+  function takeLayer(p: P): HTMLImageElement {
+    const el = pool.pop() ?? Object.assign(document.createElement('img'), { className: 'vprint', alt: '', draggable: false });
+    el.setAttribute('aria-hidden', 'true');
+    el.style.backgroundImage = p.ph ? `url("${p.ph}")` : '';
+    el.src = ready.get(p) ?? p.img.src;
+    const f = fitRect(p);
+    el.style.width = f.w + 'px'; el.style.height = f.h + 'px';
+    el.hidden = false;
+    if (!el.parentNode) vstage.appendChild(el);
+    return el;
+  }
+  function dropLayer(v: number) {
+    const L = S.layers.get(v);
+    if (!L) return;
+    S.layers.delete(v);
+    if (L.el === vimg) { L.el.style.visibility = 'hidden'; return; } // the resting print stays put
+    L.el.hidden = true; L.el.removeAttribute('src');
+    pool.push(L.el);
+  }
+  /** Centre of each strip item along the travel axis. Neighbours are a print-gap apart, but at
+   *  least far enough that each one starts and ends fully off screen. */
+  function layoutStrip() {
+    const vs = [...S.items.keys()].sort((a, b) => a - b);
+    if (!vs.length) { S.X.clear(); return; }
+    const size = (v: number) => along(fitRect(S.items.get(v)!)), view = viewAlong();
+    const step = (a: number, b: number) => Math.max(size(a) / 2 + SLIDE_GAP + size(b) / 2, view / 2 + Math.max(size(a), size(b)) / 2 + SLIDE_MARGIN);
+    // Measured out from the current target, which keeps its place (positions never jump).
+    const zero = vs.includes(S.target) ? S.target : vs[0], x0 = S.X.get(zero) ?? 0;
+    S.X.clear();
+    S.X.set(zero, x0);
+    let x = x0;
+    for (let v = zero + 1; S.items.has(v); v++) { x += step(v - 1, v); S.X.set(v, x); }
+    x = x0;
+    for (let v = zero - 1; S.items.has(v); v--) { x -= step(v, v + 1); S.X.set(v, x); }
+  }
+  function renderStrip() {
+    const view = viewAlong();
+    for (const [v, p] of S.items) {
+      const X = S.X.get(v);
+      if (X === undefined) continue;
+      const off = X - S.pos, f = fitRect(p);
+      const onScreen = Math.abs(off) < view / 2 + along(f) / 2 + 40;
+      let L = S.layers.get(v);
+      if (L && L.p !== p) { dropLayer(v); L = undefined; }
+      if (!onScreen) { if (L) dropLayer(v); continue; }
+      if (!L) { L = { el: takeLayer(p), p, fit: f, pose: null }; S.layers.set(v, L); }
+      const ox = S.axis === 'x' ? off : 0, oy = S.axis === 'y' ? off : 0;
+      if (L.pose) {
+        const q = L.pose;
+        L.el.style.transform = `translate(${q.cx - L.fit.w / 2 + ox}px, ${q.cy - L.fit.h / 2 + oy}px) rotate(${q.angle}rad) scale(${q.s})`;
+      } else {
+        L.el.style.transform = `translate(${L.fit.x + ox}px, ${L.fit.y + oy}px)`;
+      }
+    }
+  }
+  /** Put the strip in motion, starting from the print at rest (keeping its exact pose). */
+  function beginSlide(axis: 'x' | 'y') {
+    if (S.active) return;
+    V.anim?.cancel(); V.anim = null;
+    S.active = true; S.axis = axis;
+    S.items.clear(); S.layers.clear();
+    S.items.set(0, V.p!);
+    S.pos = S.target = S.from = 0; S.vel = 0;
+    vimg.style.visibility = '';
+    S.layers.set(0, { el: vimg, p: V.p!, fit: { ...V.fit }, pose: { cx: V.cx, cy: V.cy, s: V.s, angle: V.angle } });
+    vstage.classList.add('sliding');
+    layoutStrip();
+  }
+  /** Ease towards S.target from wherever the strip is now (no snapping). A flick or a slide already
+   *  moving faster than the curve's own launch speed shortens the glide so it starts at that speed:
+   *  the motion stays on the curve, so it never overshoots. */
+  function glideTo(target: number, v0 = S.vel) {
+    cancelAnimationFrame(S.raf);
+    S.from = S.pos; S.target = target; S.t0 = performance.now();
+    S.to = S.X.get(target) ?? 0;
+    const d = S.to - S.from;
+    const launch = Math.abs(d) * SLIDE_E0 / SLIDE_MS, speed = v0 * Math.sign(d);
+    S.dur = speed > launch ? clamp(SLIDE_MS * launch / speed, 260, SLIDE_MS) : SLIDE_MS;
+    S.lastT = S.t0; S.lastPos = S.pos;
+    if (reduceMotion.matches || d === 0) { finishSlide(); return; }
+    const frameFn = (t: number) => {
+      const k = clamp((t - S.t0) / S.dur, 0, 1);
+      S.pos = S.from + d * slideEase(k);
+      const dt = t - S.lastT;
+      if (dt > 0) { S.vel = (S.pos - S.lastPos) / dt; S.lastT = t; S.lastPos = S.pos; }
+      renderStrip();
+      if (k < 1) S.raf = requestAnimationFrame(frameFn); else { S.raf = 0; finishSlide(); }
+    };
+    S.raf = requestAnimationFrame(frameFn);
+  }
+  /** The print that arrived becomes the print at rest; everything else goes back in the pool. */
+  function finishSlide() {
+    if (!S.active) return;
+    cancelAnimationFrame(S.raf); S.raf = 0;
+    S.pos = S.X.get(S.target) ?? 0;
+    renderStrip();
+    const p = S.items.get(S.target)!;
+    let L = S.layers.get(S.target);
+    if (!L) { L = { el: takeLayer(p), p, fit: fitRect(p), pose: null }; S.layers.set(S.target, L); }
+    for (const v of [...S.layers.keys()]) if (v !== S.target) dropLayer(v);
+    if (L.el !== vimg) {
+      // Hand the #vimg role to the layer that arrived, and return the old one to the pool.
+      const old = vimg;
+      old.removeAttribute('id'); old.hidden = true; old.style.visibility = ''; old.removeAttribute('src'); old.setAttribute('aria-hidden', 'true');
+      pool.push(old);
+      L.el.id = 'vimg'; L.el.removeAttribute('aria-hidden');
+      vimg = L.el;
+    }
+    vimg.style.visibility = '';
+    vimg.alt = 'Print ' + p.n;
+    S.active = false; S.items.clear(); S.layers.clear(); S.X.clear(); S.vel = 0;
+    vstage.classList.remove('sliding');
+    setFit(p);
+    Object.assign(V, restPose());
+    drawImg();
+    if (V.open) { loadFull(p); preloadAround(p); }
+  }
+  /** Jump to the end of any slide in progress (before closing, zooming or resizing). */
+  function settleSlide() { if (S.active) finishSlide(); }
+
+  /** A print becomes the current one: URL, title, focus target, and its hole on the wall. */
+  function commit(q: P) {
     const p = V.p;
-    if (!q || !p || q === p) return;
-    V.anim?.cancel();
-    const ghost = vimg.cloneNode() as HTMLImageElement;
-    ghost.removeAttribute('id');
-    ghost.className = 'ghost';
-    vstage.appendChild(ghost);
-    const g0 = { cx: V.cx, s: V.s, w: V.fit.w, h: V.fit.h, cy: V.cy };
-    tween(240, (k) => {
-      const dx = axis === 'x' ? dir * 70 * k : 0, dy = axis === 'y' ? dir * 70 * k : 0;
-      ghost.style.transform = `translate(${g0.cx - g0.w / 2 - dx}px, ${g0.cy - g0.h / 2 - dy}px) scale(${g0.s})`;
-      ghost.style.opacity = String(1 - k);
-    }, () => ghost.remove());
+    if (!p || p === q) return;
     p.el.classList.remove('away');
     q.el.classList.add('away');
     V.p = q; V.lastFocus = q.el;
-    vimg.style.backgroundImage = q.ph ? `url("${q.ph}")` : '';
-    vimg.src = q.img.src;
-    vimg.alt = 'Print ' + q.n;
-    setFit(q);
-    const rest = restPose();
-    Object.assign(V, rest, axis === 'x' ? { cx: rest.cx + dir * 70 } : { cy: rest.cy + dir * 70 });
-    vimg.style.opacity = '0';
-    drawImg();
-    tween(280, (k) => { vimg.style.opacity = String(k); });
-    animatePose(rest, 280, easeOut);
-    loadFull(q);
     setUrl(q);
     animateTo(bringIntoView(q), 420); // the wall follows behind the veil
   }
+  /** Slide to print q, arriving from the right (dir 1) or left (dir -1), or from below/above. */
+  function slideTo(q: P | undefined, dir: number, axis: 'x' | 'y' = 'x') {
+    if (!q || !V.open || !V.p) return;
+    if (S.active && S.axis !== axis) settleSlide();
+    if (!S.active) { if (q === V.p) return; beginSlide(axis); }
+    const v = S.target + dir;
+    if (S.items.get(v) !== q) {
+      // Anything beyond the new item in that direction is stale.
+      for (const k of [...S.items.keys()]) if ((k - S.target) * dir >= 1) { dropLayer(k); S.items.delete(k); }
+      S.items.set(v, q);
+    }
+    layoutStrip();
+    commit(q);
+    preload(q);
+    glideTo(v);
+  }
+  const switchTo = (q: P | undefined, dir: number, axis: 'x' | 'y' = 'x') => slideTo(q, dir, axis);
+
   function go(dir: number) {
     if (!V.open || !V.p) return;
     const i = seqIndex.get(V.p)!;
-    switchTo(seq[(i + dir + seq.length) % seq.length], dir);
+    slideTo(seq[(i + dir + seq.length) % seq.length], dir);
   }
   /** ↑ / ↓: the print just above or below on the wall; past the top or bottom, wraps round. */
   function goVertical(dir: number) {
@@ -546,6 +723,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     return { cx: W <= vw ? r.cx : clamp(cx, vw - W / 2, W / 2), cy: H <= vh ? r.cy : clamp(cy, vh - H / 2, H / 2) };
   }
   function zoomViewerAt(ns: number, sx: number, sy: number, dur = 0) {
+    if (S.active) return; // no zooming mid-slide
     ns = clamp(ns, 1, maxScale());
     const r = restPose();
     let cx = sx + (V.cx - sx) * (ns / V.s), cy = sy + (V.cy - sy) * (ns / V.s);
@@ -560,7 +738,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
   on(vnext, 'click', () => go(1));
   on(vstage, 'wheel', (e: WheelEvent) => {
     e.preventDefault();
-    if (!V.open || V.anim) return;
+    if (!V.open || V.anim || S.active) return;
     let dx = e.deltaX, dy = e.deltaY;
     if (e.deltaMode === 1) { dx *= 16; dy *= 16; } else if (e.deltaMode === 2) { dx *= innerWidth; dy *= innerHeight; }
     if (e.ctrlKey) {
@@ -572,7 +750,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
   }, { passive: false });
 
   const vp = new Map<number, { x: number; y: number }>();
-  type VG = { x0: number; y0: number; lx: number; ly: number; mode: string | null; onImg: boolean; type: string; samples: number[][] };
+  type VG = { x0: number; y0: number; lx: number; ly: number; mode: string | null; onImg: boolean; type: string; samples: number[][]; grabbed: boolean; pos0: number; base: number };
   let vg: VG | null = null, vpinch: { d: number; s0: number; cx: number; cy: number; pcx: number; pcy: number } | null = null;
   let vLastTap: { t: number; x: number; y: number } | null = null;
   on(vstage, 'pointerdown', (e: PointerEvent) => {
@@ -580,8 +758,12 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     vp.set(e.pointerId, { x: e.clientX, y: e.clientY });
     try { vstage.setPointerCapture(e.pointerId); } catch { /* ignore */ }
     if (vp.size === 1) {
-      vg = { x0: e.clientX, y0: e.clientY, lx: e.clientX, ly: e.clientY, mode: null, onImg: e.target === vimg, type: e.pointerType, samples: [[performance.now(), e.clientX, e.clientY]] };
+      // Touching a sliding print catches it where it is.
+      const grabbed = S.active;
+      if (grabbed) { cancelAnimationFrame(S.raf); S.raf = 0; }
+      vg = { x0: e.clientX, y0: e.clientY, lx: e.clientX, ly: e.clientY, mode: null, onImg: e.target === vimg, type: e.pointerType, samples: [[performance.now(), e.clientX, e.clientY]], grabbed, pos0: 0, base: 0 };
     } else if (vp.size === 2) {
+      if (S.active) { vp.delete(e.pointerId); return; } // no pinch mid-slide
       const [a, b] = [...vp.values()];
       vpinch = { d: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)), s0: V.s, cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2, pcx: V.cx, pcy: V.cy };
       if (vg) vg.mode = 'pinch';
@@ -602,12 +784,23 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     if (!vg || V.anim) return;
     const dx = e.clientX - vg.x0, dy = e.clientY - vg.y0;
     if (!vg.mode && Math.hypot(dx, dy) > 8) {
-      vg.mode = V.s > 1.01 ? 'pan' : Math.abs(dx) > Math.abs(dy) ? 'swipe-x' : (dy > 0 ? 'swipe-down' : 'none');
+      const horizontal = Math.abs(dx) > Math.abs(dy);
+      if (vg.grabbed) vg.mode = horizontal && S.axis === 'x' ? 'swipe-x' : 'none';
+      else vg.mode = V.s > 1.01 ? 'pan' : horizontal ? 'swipe-x' : (dy > 0 ? 'swipe-down' : 'none');
       if (vg.mode === 'pan') vstage.classList.add('panning');
+      if (vg.mode === 'swipe-x') {
+        // The print follows the finger, with its neighbours on the strip on either side.
+        if (!S.active) beginSlide('x');
+        const cur = S.items.get(S.target)!, i = seqIndex.get(cur)!;
+        for (const d of [-1, 1]) if (!S.items.has(S.target + d)) S.items.set(S.target + d, seq[(i + d + seq.length) % seq.length]);
+        layoutStrip();
+        vg.pos0 = S.pos + dx; vg.base = S.target; // so the strip doesn't jump by the 8px dead zone
+        for (const d of [-1, 1]) preload(S.items.get(S.target + d));
+      }
     }
     const r = restPose();
     if (vg.mode === 'pan') { const c = clampViewerPan(V.cx + e.clientX - vg.lx, V.cy + e.clientY - vg.ly, V.s); V.cx = c.cx; V.cy = c.cy; drawImg(); }
-    else if (vg.mode === 'swipe-x') { V.cx = r.cx + dx; drawImg(); }
+    else if (vg.mode === 'swipe-x') { S.pos = vg.pos0 - dx; renderStrip(); }
     else if (vg.mode === 'swipe-down') {
       V.cy = r.cy + Math.max(0, dy); V.s = 1 - Math.min(.25, Math.max(0, dy) / 1600);
       veil.style.opacity = String(1 - Math.min(.6, Math.max(0, dy) / 500));
@@ -623,7 +816,13 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     if (vpinch) { if (vp.size < 2) vpinch = null; vg = null; return; }
     const g = vg; vg = null;
     vstage.classList.remove('panning');
-    if (!g || !V.open || e.type !== 'pointerup') { if (V.open && g?.mode && g.mode !== 'pan') animatePose(restPose(), 220, easeOut); veil.style.opacity = ''; return; }
+    if (g?.grabbed && g.mode !== 'swipe-x') { if (S.active) glideTo(S.target, 0); return; } // let go: it carries on
+    if (!g || !V.open || e.type !== 'pointerup') {
+      if (g?.mode === 'swipe-x' && S.active) glideTo(g.base, 0);
+      else if (V.open && g?.mode && g.mode !== 'pan') animatePose(restPose(), 220, easeOut);
+      veil.style.opacity = '';
+      return;
+    }
     const now = performance.now();
     const recent = g.samples.filter((q) => now - q[0] < 100);
     const span = recent.length > 1 ? Math.max(1, recent[recent.length - 1][0] - recent[0][0]) : 1;
@@ -631,7 +830,12 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
     const vy = recent.length > 1 ? (recent[recent.length - 1][2] - recent[0][2]) / span : 0;
     const dx = e.clientX - g.x0, dy = e.clientY - g.y0;
     if (g.mode === 'swipe-x') {
-      if (dx < -60 || v < -.45) go(1); else if (dx > 60 || v > .45) go(-1); else animatePose(restPose(), 220, easeOut);
+      // Past a quarter of the screen, or flicked: it goes, carrying the flick's speed. Otherwise
+      // both prints slide back. (Strip position runs against the finger, hence -v.)
+      const far = innerWidth * .25, fast = .5;
+      const dir = (dx < -far || v < -fast) && v <= .2 ? 1 : (dx > far || v > fast) && v >= -.2 ? -1 : 0;
+      const q = dir ? S.items.get(g.base + dir) : undefined;
+      if (q) { commit(q); glideTo(g.base + dir, -v); } else glideTo(g.base, -v);
       return;
     }
     if (g.mode === 'swipe-down') {
@@ -653,9 +857,18 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
   on(vstage, 'pointercancel', vUp);
 
   /* ---------------- Keyboard ---------------- */
+  let lastRepeat = 0;
   on(document, 'keydown', (e: KeyboardEvent) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (V.open) {
+      if (e.key.startsWith('Arrow') && e.repeat) {
+        // A held arrow walks through prints at a steady pace instead of the key-repeat rate.
+        e.preventDefault();
+        const now = performance.now();
+        if (now - lastRepeat < 170) return;
+        lastRepeat = now;
+      }
+      if (vg?.mode === 'swipe-x') return; // a finger is on the strip
       if (e.key === 'Escape') { e.preventDefault(); closeViewer(); }
       else if (e.key === 'ArrowRight') { e.preventDefault(); go(1); }
       else if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }
@@ -706,6 +919,7 @@ export function mountWall(root: El, layout: WallLayout, opts: WallOptions = {}) 
       setModes(); computeLimits();
       z = clamp(z, minZ, MAX_Z);
       clampPan(); apply(); upgradeTiers();
+      settleSlide();
       if (V.open && !V.anim && V.p) { setFit(V.p); Object.assign(V, restPose()); drawImg(); }
     });
   });
